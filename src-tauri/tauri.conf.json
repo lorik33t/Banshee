@@ -43,5 +43,9 @@
       "qwen-handler.js",
       "codex-handler.js"
     ]
+  },
+  "model": {
+    "apiEndpoint": "https://api.example.com",
+    "apiKey": ""
   }
 }

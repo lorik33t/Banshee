@@ -170,7 +170,11 @@ export const useSettings = create<SettingsState>((set, get) => ({
       // @ts-ignore - Tauri window
       if (typeof window !== 'undefined' && (window as any).__TAURI__) {
         // Use Tauri API invoke (v2) instead of window.__TAURI__.invoke
-        const settings = await tauriInvoke<ClaudeSettings>('load_settings')
+        const [fileSettings, envSettings] = await Promise.all([
+          tauriInvoke<ClaudeSettings>('load_settings'),
+          tauriInvoke<Partial<ClaudeSettings>>('get_model_config').catch(() => ({}))
+        ])
+        const settings = { ...(envSettings || {}), ...(fileSettings || {}) }
         // Mirror to localStorage so ModelRouter (which reads localStorage) stays in sync
         try { localStorage.setItem('claude_settings', JSON.stringify(settings || {})) } catch {}
         set({ settings, isLoading: false })
