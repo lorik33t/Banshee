@@ -20,3 +20,12 @@ src-tauri/Cargo.lock
 
 # OS
 Thumbs.db
+
+# Secrets
+.env
+.env.*
+repos/.gemini-config
+repos/**/.env
+
+# Checkpoints
+.checkpoints/

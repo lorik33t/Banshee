@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Claude Code UI",
+  "productName": "Banshee",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.banshee.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -10,28 +10,38 @@
     "beforeBuildCommand": "vite build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Claude Code UI",
+        "title": "Banshee",
         "width": 1280,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": true,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false
       }
     ],
     "security": {
       "csp": null
     }
   },
+  "plugins": {},
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg"],
     "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.icns"
+    ],
+    "resources": [
+      "claude-handler.js",
+      "gemini-handler.js",
+      "qwen-handler.js",
+      "codex-handler.js"
     ]
   }
 }

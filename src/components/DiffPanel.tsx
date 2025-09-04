@@ -15,7 +15,7 @@ export function DiffPanel() {
           <div style={{ fontWeight: 600 }}>Proposed edits</div>
           <div className="pill">No edits</div>
         </div>
-        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, color: 'var(--muted)' }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12, color: 'var(--text-muted)' }}>
           No edits yet. Ask Claude to make a change.
         </div>
       </div>
@@ -46,7 +46,7 @@ export function DiffPanel() {
             key={e.id}
             className="chip"
             onClick={() => select(e.id)}
-            style={{ borderColor: selectedId === e.id ? 'var(--accent)' : 'var(--border)', color: selectedId === e.id ? 'var(--text)' : 'var(--muted)' }}
+            style={{ borderColor: selectedId === e.id ? 'var(--accent)' : 'var(--border)', color: selectedId === e.id ? 'var(--text-primary)' : 'var(--text-muted)' }}
           >
             {e.file} — {e.status}
           </button>

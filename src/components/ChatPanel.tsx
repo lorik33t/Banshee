@@ -1,21 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSession } from '../state/session'
+import { ModelRouter } from '../utils/modelRouter'
+import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 
 export function ChatPanel() {
   const pushEvent = useSession((s) => s.pushEvent)
   const [input, setInput] = useState('')
   const streamRef = useRef<HTMLDivElement>(null)
+  const [router] = useState(() => new ModelRouter())
 
-  useEffect(() => {
-    const api = (window as any).__TAURI__?.event
-    if (!api) return
-    let unlisten: any
-    api.listen('claude:stream', (e: any) => {
-      // forward raw event to state; mapping handled later
-      pushEvent({ type: 'raw', payload: e.payload, ts: Date.now() } as any)
-    }).then((u: any) => { unlisten = u })
-    return () => { if (unlisten) unlisten() }
-  }, [pushEvent])
+  // NOTE: Composer already listens to 'claude:stream' and updates state.
+  // Avoid registering another listener here to prevent duplicate rendering.
 
   useEffect(() => {
     // auto-scroll
@@ -26,15 +21,25 @@ export function ChatPanel() {
   async function send() {
     const text = input.trim()
     if (!text) return
-    // emit user message to UI state
-    pushEvent({ id: String(Date.now()), type: 'message', role: 'user', text, ts: Date.now() } as any)
+    // Route model using the unified router
+    const { model, reason } = router.selectModelWithReason(text)
+    // emit user message to UI state with routing badge metadata
+    pushEvent({ id: String(Date.now()), type: 'message', role: 'user', text, ts: Date.now(), model, routingReason: reason } as any)
     setInput('')
-    // send to backend process stdin
-    const invoke = (window as any).__TAURI__?.core?.invoke
+    // send to backend unified command so non-Claude models use their own handlers
     try {
-      await invoke?.('send_to_claude', { input: text })
-    } catch {
-      // ignore
+      await tauriInvoke('send_to_model', {
+        input: JSON.stringify({ currentMessage: text }),
+        model
+      })
+    } catch (e) {
+      // Best-effort fallback to Claude on error
+      try {
+        await tauriInvoke('send_to_model', {
+          input: JSON.stringify({ currentMessage: text }),
+          model: 'claude'
+        })
+      } catch {}
     }
   }
 
@@ -55,7 +60,7 @@ export function ChatPanel() {
           <textarea
             className="composer-input"
             rows={1}
-            placeholder="Chat with Claude… /commands and @files supported"
+            placeholder="Describe your goal… Press Enter to send"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

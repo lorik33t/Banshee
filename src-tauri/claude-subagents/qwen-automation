@@ -1,0 +1,58 @@
+#!/usr/bin/env node
+
+// Qwen Automation Subagent - Repository-scale workflow automation expert
+// This script acts as a bridge between Claude's Task tool and the Qwen CLI
+
+import { spawn } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+
+// Read task input from stdin
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+});
+
+process.stdin.on('end', () => {
+  // Get Qwen config
+  const configPath = join(process.cwd(), 'repos', '.qwen-config');
+  if (!existsSync(configPath)) {
+    console.error('Qwen is not configured. Please authenticate first.');
+    process.exit(1);
+  }
+  
+  // Read API key from config
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const apiKey = config.apiKey;
+  
+  if (!apiKey) {
+    console.error('Qwen API key not found. Please authenticate first.');
+    process.exit(1);
+  }
+  
+  // Run Qwen with the task
+  const qwen = spawn('npx', [
+    'https://github.com/QwenLM/qwen-code',
+    '--api-key', apiKey,
+    '--model', 'qwen-2.5-coder',
+    '--mode', 'automation',
+    input
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, QWEN_API_KEY: apiKey }
+  });
+  
+  // Stream output
+  qwen.stdout.on('data', (data) => {
+    process.stdout.write(data);
+  });
+  
+  qwen.stderr.on('data', (data) => {
+    process.stderr.write(data);
+  });
+  
+  qwen.on('close', (code) => {
+    process.exit(code || 0);
+  });
+});
