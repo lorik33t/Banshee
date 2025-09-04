@@ -1,5 +1,5 @@
 import './index.css'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Header } from './components/Header'
 import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
@@ -10,19 +10,16 @@ import { PermissionDialog } from './components/PermissionDialog'
 import { SettingsDialogV2 } from './components/SettingsDialogV2'
 import { LightningLoader } from './components/LightningLoader'
 import { WelcomeView } from './components/WelcomeView'
-import { invoke } from '@tauri-apps/api/core'
-import { useSession } from './state/session'
-import { useWorkspaceStore } from './state/workspace'
+import { useProjectLifecycle } from './hooks/useProjectLifecycle'
+import { useGlobalShortcuts } from './hooks/useGlobalShortcuts'
 import { TauriInitDiagnostics } from './components/TauriInitDiagnostics'
 // Checkpointing temporarily disabled
 
 export default function App() {
   const [sidePanelOpen, setSidePanelOpen] = useState(false)
   const [sidePanelContent, setSidePanelContent] = useState<'files' | 'diff'>('diff')
-  const [claudeReady, setClaudeReady] = useState(false)
   const [settingsView, setSettingsView] = useState(false)
-  const sessionStore = useSession()
-  const { projects, activeProjectId, getProject } = useWorkspaceStore()
+  const { activeProject, claudeReady, openProject, closeProject } = useProjectLifecycle()
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
     const saved = localStorage.getItem('leftSidebarOpen')
     return saved !== 'false'
@@ -31,33 +28,11 @@ export default function App() {
     const saved = localStorage.getItem('rightSidebarOpen')
     return saved !== 'false'
   })
-  
-  // Get active project
-  const activeProject = activeProjectId ? getProject(activeProjectId) : null
-  
-  // Initialize projectDir in session store if we have an active project
-  useEffect(() => {
-    console.log('[App] Project init effect - activeProject:', activeProject, 'sessionStore.projectDir:', sessionStore.projectDir)
-    if (activeProject && !sessionStore.projectDir) {
-      console.log('[App] Setting project directory to:', activeProject.path)
-      // Set project directory immediately so FileTree can load
-      sessionStore.setProjectDir(activeProject.path)
-    }
-  }, [activeProject?.path, sessionStore.projectDir])
 
-  // Checkpoint clearing on startup removed for first shipping
-  
-  // Removed: background auth checks on app startup to prevent UI stalls.
-  // Auth checks will run only on-demand when the user opens the settings/auth UI.
-  
-  // If we have an active project but Claude isn't ready, we need to either start Claude or clear the project
-  useEffect(() => {
-    if (activeProject && !claudeReady) {
-      // Set ready immediately for instant UI, Claude will catch up in background
-      setClaudeReady(true)
-      openProject(activeProject.path)
-    }
-  }, [activeProject?.id])
+  const toggleLeftSidebar = useCallback(() => setLeftSidebarOpen(prev => !prev), [setLeftSidebarOpen])
+  const toggleRightSidebar = useCallback(() => setRightSidebarOpen(prev => !prev), [setRightSidebarOpen])
+
+  useGlobalShortcuts({ activeProject, toggleLeftSidebar, toggleRightSidebar })
   
   // Save sidebar states
   useEffect(() => {
@@ -67,76 +42,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('rightSidebarOpen', String(rightSidebarOpen))
   }, [rightSidebarOpen])
-
-  // Global keyboard shortcuts
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      // Only enable shortcuts when a project is open
-      if (!activeProject) return
-      
-      // Cmd+B toggle left sidebar
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault()
-        setLeftSidebarOpen(prev => !prev)
-      }
-      // Cmd+K toggle right sidebar
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault()
-        setRightSidebarOpen(prev => !prev)
-      }
-      // Cmd+] cycle workbench tabs
-      if ((e.metaKey || e.ctrlKey) && e.key === ']') {
-        e.preventDefault()
-        // Only one tab ('diffs') in first ship; no cycling
-        sessionStore.setWorkbenchTab('diffs')
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    
-    return () => {
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [activeProject, sessionStore])
-
-  // Initialize Claude when project is opened
-  const openProject = async (path: string) => {
-    // Set UI ready immediately for instant feedback
-    setClaudeReady(true)
-    
-    // Add to workspace store
-    const projectName = path.split('/').pop() || path
-    const { addProject, setActiveProject } = useWorkspaceStore.getState()
-    
-    // Check if project already exists
-    const existingProject = projects.find(p => p.path === path)
-    if (existingProject) {
-      setActiveProject(existingProject.id)
-    } else {
-      const projectId = addProject({ name: projectName, path })
-      setActiveProject(projectId)
-    }
-    
-    // Set project directory in session store immediately
-    sessionStore.setProjectDir(path)
-    
-    // Start Claude in background without blocking UI
-    Promise.resolve().then(async () => {
-      try {
-        await invoke('start_claude', { projectDir: path })
-      } catch (err) {
-        console.error('Failed to start Claude:', err)
-      }
-    })
-  }
-  
-  // Cleanup Claude on unmount or project change
-  useEffect(() => {
-    return () => {
-      if (claudeReady && (window as any).__TAURI__) {
-        invoke('stop_claude').catch(console.error)
-      }
-    }
-  }, [claudeReady])
 
   const openSidePanel = (content: 'files' | 'diff') => {
     setSidePanelContent(content)
@@ -178,23 +83,14 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header 
+      <Header
         onOpenDiff={() => openSidePanel('diff')}
         leftSidebarOpen={leftSidebarOpen}
         rightSidebarOpen={rightSidebarOpen}
-        onToggleLeftSidebar={() => setLeftSidebarOpen(!leftSidebarOpen)}
-        onToggleRightSidebar={() => setRightSidebarOpen(!rightSidebarOpen)}
+        onToggleLeftSidebar={toggleLeftSidebar}
+        onToggleRightSidebar={toggleRightSidebar}
         onOpenSettings={() => setSettingsView(true)}
-        onOpenFolder={async () => {
-          // Allow changing project - stop current Claude instance
-          if (claudeReady) {
-            await invoke('stop_claude').catch(console.error)
-          }
-          setClaudeReady(false)
-          // Clear active project
-          const { setActiveProject } = useWorkspaceStore.getState()
-          setActiveProject(null)
-        }}
+        onOpenFolder={closeProject}
       />
       
       <div className="main-content">
