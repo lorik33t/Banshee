@@ -1,10 +1,9 @@
 import { DiffPanel } from './DiffPanel'
 import { CheckpointsPanel } from './CheckpointsPanel'
+import { DebugPanel } from './DebugPanel'
 import { useSession } from '../state/session'
 
-interface WorkbenchProps {}
-
-export function Workbench({}: WorkbenchProps = {}) {
+export function Workbench() {
   const tab = useSession(s => s.ui.workbenchTab)
   const setTab = useSession(s => s.setWorkbenchTab)
   return (
@@ -18,9 +17,13 @@ export function Workbench({}: WorkbenchProps = {}) {
           className={`wb-tab ${tab === 'checkpoints' ? 'active' : ''}`}
           onClick={() => setTab('checkpoints')}
         >Checkpoints</button>
+        <button
+          className={`wb-tab ${tab === 'debug' ? 'active' : ''}`}
+          onClick={() => setTab('debug')}
+        >Debug</button>
       </div>
       <div className="workbench-body">
-        {tab === 'diffs' ? <DiffPanel /> : <CheckpointsPanel />}
+        {tab === 'diffs' ? <DiffPanel /> : tab === 'checkpoints' ? <CheckpointsPanel /> : <DebugPanel />}
       </div>
     </aside>
   )

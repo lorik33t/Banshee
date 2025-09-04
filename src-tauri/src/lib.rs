@@ -16,6 +16,8 @@ mod claude_binary;
 
 mod terminal;
 use terminal::TerminalManager;
+mod debugger;
+use debugger::DebuggerManager;
 
 mod checkpoint;
 use checkpoint::*;
@@ -23,6 +25,7 @@ use checkpoint::*;
 static PROJECT_DIR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None));
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
+static DEBUGGER_MANAGER: Lazy<DebuggerManager> = Lazy::new(|| DebuggerManager::new());
 // Legacy single active process (used by older flows); kept for compatibility
 static ACTIVE_MODEL_PROCESS: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 // Persistent per-model handler processes (Gemini, Qwen, Codex)
@@ -58,6 +61,21 @@ async fn clone_repo(args: CloneArgs) -> Result<String, String> {
     return Err(format!("git clone failed with status: {}", status));
   }
   Ok(dest_dir)
+}
+
+#[tauri::command]
+fn debugger_start(app: tauri::AppHandle, id: String, adapter: String, args: Vec<String>) -> Result<(), String> {
+  DEBUGGER_MANAGER.start_debugger(id, adapter, args, app)
+}
+
+#[tauri::command]
+fn debugger_send(id: String, message: String) -> Result<(), String> {
+  DEBUGGER_MANAGER.send(&id, &message)
+}
+
+#[tauri::command]
+fn debugger_stop(id: String) -> Result<(), String> {
+  DEBUGGER_MANAGER.stop(&id)
 }
 
 #[tauri::command]
@@ -581,7 +599,8 @@ pub fn run() {
       save_checkpoint_files, restore_checkpoint, delete_checkpoint,
       list_checkpoint_files, get_checkpoint_metadata, get_git_info,
       get_checkpoint_file, restore_checkpoint_files, restore_checkpoint_with_mode,
-      clean_old_checkpoints, list_checkpoints, save_temp_image, clone_repo
+      clean_old_checkpoints, list_checkpoints, save_temp_image, clone_repo,
+      debugger_start, debugger_send, debugger_stop
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
