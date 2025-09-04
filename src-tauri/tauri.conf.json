@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "vite",
-    "beforeBuildCommand": "vite build"
+    "beforeDevCommand": "npm run build:handlers && vite",
+    "beforeBuildCommand": "npm run build:handlers && vite build"
   },
   "app": {
     "withGlobalTauri": true,
@@ -38,10 +38,8 @@
       "icons/icon.icns"
     ],
     "resources": [
-      "claude-handler.js",
-      "gemini-handler.js",
-      "qwen-handler.js",
-      "codex-handler.js"
+      "model_handlers/claude.js",
+      "model_handlers/gemini.js"
     ]
   }
 }

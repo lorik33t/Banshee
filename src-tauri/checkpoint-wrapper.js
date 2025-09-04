@@ -181,7 +181,7 @@ export function wrapWithCheckpoint(originalHandler) {
   });
 }
 
-// If called directly, wrap claude-handler.js
+// If called directly, wrap the Claude handler
 if (process.argv[1] === __filename) {
-  wrapWithCheckpoint('claude-handler.js');
+  wrapWithCheckpoint('model_handlers/claude.js');
 }

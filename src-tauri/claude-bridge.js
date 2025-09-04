@@ -5,8 +5,8 @@ const path = require('path');
 
 console.error('[Bridge] Starting Claude bridge with PTY handler...');
 
-// Use the PTY handler instead of spawning Claude directly
-const handlerPath = path.join(__dirname, 'claude-handler.js');
+// Use the compiled PTY handler instead of spawning Claude directly
+const handlerPath = path.join(__dirname, 'model_handlers', 'claude.js');
 console.error('[Bridge] Using PTY handler at:', handlerPath);
 
 // Spawn the PTY handler

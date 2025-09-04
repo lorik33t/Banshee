@@ -9,6 +9,7 @@
     "dev:desktop": "tauri dev",
     "build": "tsc -b && vite build",
     "build:desktop": "tauri build",
+    "build:handlers": "tsc -p src-tauri/model_handlers/tsconfig.json",
     "release:mac": "tauri build --bundles dmg",
     "lint": "eslint .",
     "preview": "vite preview",

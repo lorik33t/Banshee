@@ -29,3 +29,6 @@ repos/**/.env
 
 # Checkpoints
 .checkpoints/
+# Generated model handler builds
+src-tauri/model_handlers/*.js
+src-tauri/model_handlers/*.js.map

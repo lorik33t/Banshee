@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const pty = require('node-pty');
-const readline = require('readline');
-const { execSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+import pty from 'node-pty';
+import readline from 'readline';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // Create readline interface for input
 const rl = readline.createInterface({
@@ -14,7 +14,7 @@ const rl = readline.createInterface({
   terminal: false
 });
 
-let claudePty = null;
+let claudePty: any = null;
 let hasActiveSession = false;
 // Line buffer for assembling complete JSON lines before forwarding
 let incomingBuffer = '';
@@ -26,7 +26,7 @@ let incomingBuffer = '';
  * 3. Known install locations (Homebrew, system, user dirs, NVM).
  * 4. Fallback to command name `claude` (relies on PATH).
  */
-function findClaudeBinary() {
+function findClaudeBinary(): string {
   // 1. Environment variable override
   if (process.env.CLAUDE_BINARY_PATH && fs.existsSync(process.env.CLAUDE_BINARY_PATH)) {
     return process.env.CLAUDE_BINARY_PATH;
@@ -77,31 +77,31 @@ function findClaudeBinary() {
   return 'claude';
 }
 
-function spawnClaude(message) {
+function spawnClaude(message: string) {
   console.error('[Handler] Spawning Claude PTY for message:', message.substring(0, 50));
-  
+
   // Kill any existing PTY
   if (claudePty) {
     claudePty.kill();
     claudePty = null;
   }
-  
+
   // Build args
-  const args = [];
-  
+  const args: string[] = [];
+
   if (hasActiveSession) {
     args.push('-c');
   }
-  
+
   args.push('-p');
   args.push(message);
   args.push('--output-format');
   args.push('stream-json');
   args.push('--verbose');
   args.push('--dangerously-skip-permissions');
-  
+
   console.error('[Handler] Args:', args.slice(0, 4), '...');
-  
+
   // Spawn Claude with PTY
   const claudeBinaryPath = findClaudeBinary();
   console.error('[Handler] Using Claude binary:', claudeBinaryPath);
@@ -112,11 +112,11 @@ function spawnClaude(message) {
     cwd: process.cwd(),
     env: process.env
   });
-  
+
   console.error('[Handler] Claude PTY spawned with PID:', claudePty.pid);
-  
+
   // Handle output
-  claudePty.onData((data) => {
+  claudePty.onData((data: Buffer) => {
     // Accumulate data and split into complete lines, forward immediately
     incomingBuffer += data.toString('utf8');
     const parts = incomingBuffer.split(/\r?\n/);
@@ -127,9 +127,9 @@ function spawnClaude(message) {
       }
     }
   });
-  
+
   // Handle exit
-  claudePty.onExit((exitCode) => {
+  claudePty.onExit((exitCode: any) => {
     console.error('[Handler] Claude PTY exited with code:', exitCode);
     if (exitCode && exitCode.exitCode === 0) {
       hasActiveSession = true;
@@ -144,7 +144,7 @@ function spawnClaude(message) {
 }
 
 // Handle input
-rl.on('line', (line) => {
+rl.on('line', (line: string) => {
   try {
     const parsed = JSON.parse(line);
     if (parsed.currentMessage) {

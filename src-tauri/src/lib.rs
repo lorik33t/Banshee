@@ -25,7 +25,7 @@ static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None)
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
 // Legacy single active process (used by older flows); kept for compatibility
 static ACTIVE_MODEL_PROCESS: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
-// Persistent per-model handler processes (Gemini, Qwen, Codex)
+// Persistent per-model handler processes (e.g., Gemini)
 static MODEL_PROCESSES: Lazy<Mutex<HashMap<String, Child>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(serde::Deserialize)]
@@ -121,10 +121,8 @@ fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<
 
   // Select handler based on model
   let handler_name = match model.as_str() {
-    "claude" => "claude-handler.js",
-    "gemini" => "gemini-handler.js",
-    "qwen" => "qwen-handler.js",
-    "codex" => "codex-handler.js",
+    "claude" => "model_handlers/claude.js",
+    "gemini" => "model_handlers/gemini.js",
     _ => {
       eprintln!("[RUST] Error: Unknown model: {}", model);
       return Err(format!("Unknown model: {}", model))
