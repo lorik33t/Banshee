@@ -296,8 +296,7 @@ export function FileTree() {
   // Open file
   function openFile(node: FileNode) {
     if (node.kind === 'file') {
-      // TODO: Implement file opening
-      console.log('Open file:', node.path)
+      useSession.getState().setOpenFile(node.path)
     }
   }
 
