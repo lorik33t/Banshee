@@ -527,6 +527,36 @@ fn save_settings(settings: serde_json::Value) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_model_config() -> Result<serde_json::Value, String> {
+  // Load variables from .env if present
+  let _ = dotenvy::dotenv();
+
+  let mut api_key = std::env::var("MODEL_API_KEY").ok();
+  let mut api_endpoint = std::env::var("MODEL_API_ENDPOINT").ok();
+
+  if api_key.is_none() || api_endpoint.is_none() {
+    if let Ok(conf) = serde_json::from_str::<serde_json::Value>(include_str!("../tauri.conf.json")) {
+      if let Some(model) = conf.get("model").or_else(|| conf.get("modelConfig")) {
+        if api_key.is_none() {
+          api_key = model.get("apiKey").and_then(|v| v.as_str()).map(|s| s.to_string());
+        }
+        if api_endpoint.is_none() {
+          api_endpoint = model
+            .get("apiEndpoint")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        }
+      }
+    }
+  }
+
+  Ok(serde_json::json!({
+    "apiKey": api_key,
+    "apiEndpoint": api_endpoint
+  }))
+}
+
+#[tauri::command]
 fn save_temp_image(base64_data: String, filename: String) -> Result<String, String> {
   // Remove data URL prefix if present
   let data = if base64_data.starts_with("data:") {
@@ -581,7 +611,7 @@ pub fn run() {
       save_checkpoint_files, restore_checkpoint, delete_checkpoint,
       list_checkpoint_files, get_checkpoint_metadata, get_git_info,
       get_checkpoint_file, restore_checkpoint_files, restore_checkpoint_with_mode,
-      clean_old_checkpoints, list_checkpoints, save_temp_image, clone_repo
+      clean_old_checkpoints, list_checkpoints, save_temp_image, get_model_config, clone_repo
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
