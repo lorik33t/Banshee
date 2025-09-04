@@ -1,39 +1,45 @@
 # Banshee
 
-A Tauri + React application.
+Banshee lets you run, orchestrate, and observe CLI agents across providers. The project aims to provide a unified desktop interface for managing agent workflows.
 
-## Model configuration
+## Architecture
 
-Model API credentials can be provided without changing source code. Banshee reads
-model settings from either a `.env` file or from the Tauri configuration and
-exposes them to the React front-end through `@tauri-apps/api`.
+- **Front-end:** React + Vite for the user interface.
+- **Backend:** Tauri with a Rust core to deliver a lightweight, cross-platform desktop app.
 
-### Using `.env`
+## Setup
 
-Create a file named `.env` in the project root:
+1. **Prerequisites**
+   - Node.js and npm
+   - Rust toolchain and Tauri prerequisites
+2. **Install**
+   ```bash
+   npm install
+   ```
+3. **Run the web UI**
+   ```bash
+   npm run dev
+   ```
+4. **Run the desktop app**
+   ```bash
+   npm run dev:desktop
+   ```
+5. **Build for production**
+   ```bash
+   npm run build       # web
+   npm run build:desktop  # desktop
+   ```
 
-```
-MODEL_API_ENDPOINT=https://api.example.com
-MODEL_API_KEY=your_api_key
-```
+## Contributing
 
-### Using `tauri.conf.json`
+Contributions are welcome!
 
-Instead of a `.env` file, add a `model` block to
-`src-tauri/tauri.conf.json`:
+1. Fork the repository and create a feature branch.
+2. Install dependencies and run `npm run lint` to ensure code style.
+3. Commit your changes and open a pull request describing your contribution.
 
-```
-{
-  ...
-  "model": {
-    "apiEndpoint": "https://api.example.com",
-    "apiKey": "your_api_key"
-  }
-}
-```
+By participating, you agree that your contributions will be licensed under the same [MIT license](LICENSE).
 
-During startup the app loads these values and merges them into the user
-settings. They are accessible to the React app via the Tauri command
-`get_model_config`, allowing users to adjust model configuration in the UI
-without editing source files.
+## License
 
+This project is licensed under the [MIT License](LICENSE).
