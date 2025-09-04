@@ -3,7 +3,7 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 
-const handlerPath = process.argv[2] || './claude-handler.js';
+const handlerPath = process.argv[2] || './model_handlers/claude-handler.js';
 
 if (!existsSync(handlerPath)) {
   console.error(`Error: Handler not found at ${handlerPath}`);
