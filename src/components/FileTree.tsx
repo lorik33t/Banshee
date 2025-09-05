@@ -433,7 +433,7 @@ export function FileTree() {
                       e.stopPropagation()
                       if (!isDir && fileStatus) {
                         const sessionStore = useSession.getState()
-                        sessionStore.setWorkbenchTab('diffs')
+                        sessionStore.setWorkbenchTab('codex')
                       }
                     }}
                   />

@@ -24,11 +24,10 @@ export function useGlobalShortcuts({ activeProject, toggleLeftSidebar, toggleRig
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ']') {
         e.preventDefault()
-        sessionStore.setWorkbenchTab('diffs')
+        sessionStore.setWorkbenchTab('codex')
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [activeProject, toggleLeftSidebar, toggleRightSidebar, sessionStore])
 }
-
