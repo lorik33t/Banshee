@@ -1,5 +1,5 @@
 import './index.css'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
 import { Header } from './components/Header'
 import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
@@ -99,7 +99,7 @@ export default function App() {
             <aside className="left-sidebar" id="left-sidebar">
               <FileTree />
             </aside>
-            <div className="resizer" onMouseDown={(e) => {
+            <div className="resizer" onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
               const startX = e.clientX
               const start = document.documentElement.style.getPropertyValue('--ls-width') || '280px'
               const startPx = parseInt(start)
@@ -120,7 +120,7 @@ export default function App() {
         </div>
         {rightSidebarOpen && (
           <>
-            <div className="resizer" onMouseDown={(e) => {
+            <div className="resizer" onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
               const startX = e.clientX
               const start = document.documentElement.style.getPropertyValue('--wb-width') || '420px'
               const startPx = parseInt(start)
