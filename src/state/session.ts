@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { saveSession, loadSession, clearSession } from '../utils/sessionPersistence'
 import { invoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
-import { clearDeduplicationCache } from '../utils/claudeParser'
 
 export type Role = 'user' | 'assistant'
 export type ToolType = 'bash' | 'grep' | 'read' | 'write' | 'web' | 'mcp' | 'task'
@@ -172,7 +171,7 @@ export type SessionState = {
     isTracking: boolean
   }
   ui: {
-    workbenchTab: 'diffs' | 'checkpoints' | 'codex'
+    workbenchTab: 'checkpoints' | 'codex'
   }
 
   pushEvent: (e: SessionEvent) => void
@@ -182,7 +181,7 @@ export type SessionState = {
   rejectEdit: (id: string) => void
   selectEdit: (id?: string) => void
   resolvePermission: (allow: boolean, scope: 'once' | 'session' | 'project') => void
-  setWorkbenchTab: (tab: 'diffs' | 'checkpoints' | 'codex') => void
+  setWorkbenchTab: (tab: 'checkpoints' | 'codex') => void
   setShowTerminal: (show: boolean) => void
   setStreaming: (streaming: boolean, model?: string) => void
   clearConversation: () => void
@@ -210,7 +209,7 @@ export const useSession = create<SessionState>((set, get) => {
       modifiedFiles: new Set(),
       isTracking: false
     },
-    ui: { workbenchTab: 'diffs' },
+    ui: { workbenchTab: 'codex' },
 
   pushEvent: (e) => {
     const state = get()
@@ -740,7 +739,7 @@ export const useSession = create<SessionState>((set, get) => {
         events: nextEvents.length > 50000 ? nextEvents.slice(-50000) : nextEvents,
         edits: [...state.edits, edit],
         selectedEditId: e.id,
-        ui: { ...state.ui, workbenchTab: 'diffs' },
+        ui: { ...state.ui, workbenchTab: 'codex' },
       })
       return
     }
@@ -928,7 +927,6 @@ export const useSession = create<SessionState>((set, get) => {
               cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 }
             })
           }
-          try { clearDeduplicationCache() } catch {}
           if (typeof window !== 'undefined' && (window as any).__TAURI__) {
             invoke('restart_claude', { projectDir: pending }).catch(() => {})
           }

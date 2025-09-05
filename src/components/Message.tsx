@@ -123,26 +123,7 @@ export function Message({ message }: MessageProps) {
               )
             }
           })}
-          {hasDiffFence && (
-            <button className="chip" style={{ marginTop: 8 }} onClick={() => {
-              import('../state/session').then(({ useSession }) => {
-                useSession.getState().setWorkbenchTab('diffs')
-              })
-            }}>Open in Diffs</button>
-          )}
-          {message.tokens && (
-            <div className="message-tokens">
-              <span className="token-count">
-                {message.tokens.input.toLocaleString()} tokens in / {message.tokens.output.toLocaleString()} tokens out
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  // User: minimalist card (no heavy header)
+            // User: minimalist card (no heavy header)
   return (
     <div className={`message ${message.role} no-avatar`}>
       <div className="user-message">
