@@ -144,9 +144,9 @@ static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None)
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
 static LSP_MANAGER: Lazy<LspManager> = Lazy::new(|| LspManager::new());
 // Registry of model handlers
-static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send>>>> =
+static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send + 'static>>>> =
     Lazy::new(|| {
-        let mut m: HashMap<String, Box<dyn ModelHandler + Send>> = HashMap::new();
+        let mut m: HashMap<String, Box<dyn ModelHandler + Send + 'static>> = HashMap::new();
         m.insert(
             "claude".into(),
             Box::new(NodeModelHandler::new(
@@ -175,7 +175,7 @@ static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send>>>
                 "model_handlers/codex-handler.js",
             )),
         );
-        m
+        Mutex::new(m)
     });
 
 #[derive(serde::Deserialize)]
