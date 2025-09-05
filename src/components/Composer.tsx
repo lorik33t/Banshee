@@ -1,5 +1,6 @@
 import { Paperclip, Command, StopCircle, Sparkles, Zap, Bot, ArrowUp, Mic, Image, Terminal as TerminalIcon, BarChart3 } from 'lucide-react'
 import React, { useState, useRef, useEffect } from 'react'
+import * as monaco from 'monaco-editor'
 import { createPortal } from 'react-dom'
 import { useSession } from '../state/session'
 import { ModelRouter } from '../utils/modelRouter'
@@ -9,6 +10,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs'
 import { listen as tauriListen } from '@tauri-apps/api/event'
 import { useSettings } from '../state/settings'
 import { UsageStatsModal } from './UsageStatsModal'
+import { Editor } from './Editor'
 
 type AgentType = 'claude' | 'gemini' | 'qwen' | 'codex'
 
@@ -51,7 +53,6 @@ export function Composer() {
   const [isFocused, setIsFocused] = useState(false)
   const [attachedImages, setAttachedImages] = useState<Array<{ url: string; name: string }>>([])
   const [isDragging, setIsDragging] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pushEvent = useSession((s) => s.pushEvent)
   // Only enable reacting to stream events after an explicit send
@@ -78,13 +79,7 @@ export function Composer() {
   // Autopilot orchestration removed in first ship; refs unused
   const appSettings = useSettings((s) => s.settings)
 
-  // Auto-resize textarea
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
-    }
-  }, [input])
+  // Auto-resize textarea removed for Monaco editor
 
   // Recalculate picker position when open/resize/scroll
   useEffect(() => {
@@ -690,61 +685,27 @@ export function Composer() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: monaco.IKeyboardEvent) => {
+    if (e.keyCode === monaco.KeyCode.Enter && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
   
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleInputChange = (value: string) => {
     setInput(value)
-    // Show agent selector when an @-mention is being typed at the caret
-    const caret = e.target.selectionStart ?? value.length
-    const upToCaret = value.slice(0, caret)
-    const inProgressMention = /@([a-z]*)$/i.test(upToCaret)
+    const inProgressMention = /@([a-z]*)$/i.test(value)
     if (inProgressMention) {
       setShowAgents(true)
     } else if (!value.includes('@') || value.match(/@(claude|gemini|qwen|codex)\s/i)) {
-      // Hide if no @ present anywhere or a full @mention has just been completed
       setShowAgents(false)
     }
   }
 
   const selectAgent = (agentId: AgentType) => {
-    const el = textareaRef.current
     setSelectedAgent(agentId)
     setShowAgents(false)
-    if (!el) {
-      setInput(`@${agentId} `)
-      return
-    }
-    const caret = el.selectionStart ?? input.length
-    // Replace the in-progress @mention at the caret, if any
-    const before = input.slice(0, caret)
-    const after = input.slice(caret)
-    const match = before.match(/@[^\s]*$/)
-    if (match) {
-      const start = caret - match[0].length
-      const newValue = input.slice(0, start) + `@${agentId} ` + after
-      setInput(newValue)
-      // Restore caret after the inserted mention
-      setTimeout(() => {
-        const pos = start + (`@${agentId} `).length
-        try { el.setSelectionRange(pos, pos) } catch {}
-        el.focus()
-      }, 0)
-    } else {
-      // Fallback: insert at current caret or append
-      const newValue = input.slice(0, caret) + `@${agentId} ` + input.slice(caret)
-      setInput(newValue)
-      setTimeout(() => {
-        const pos = caret + (`@${agentId} `).length
-        try { el.setSelectionRange(pos, pos) } catch {}
-        el.focus()
-      }, 0)
-    }
+    setInput(`@${agentId} `)
   }
 
   // Picker in toolbar: only set default agent; do not modify input
@@ -995,17 +956,14 @@ return (
       </div>
 
       <div className={`composer-input-area ${isDragging ? 'drag-over' : ''}`}>
-        <textarea
-          ref={textareaRef}
-          className="composer-textarea"
-          placeholder={`Describe your goal… (@ to switch agents, paste images)`}
+        <Editor
+          language="plaintext"
           value={input}
           onChange={handleInputChange}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setTimeout(() => setIsFocused(false), 200)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          rows={1}
         />
         <div className="composer-actions">
           {isStreaming ? (

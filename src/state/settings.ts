@@ -84,6 +84,9 @@ export interface ClaudeSettings {
     codex?: { binPath?: string; enabled?: boolean; displayMode?: 'clean' | 'compact' | 'verbose'; showReasoning?: boolean }
   }
 
+  // Language servers
+  lspServers?: Record<string, string>
+
   // Common agent behavior toggles
   mcpEnabled?: boolean
   webSearchEnabled?: boolean
@@ -129,6 +132,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       qwen: { enabled: true },
       codex: { enabled: false, displayMode: 'clean', showReasoning: true }
     },
+    lspServers: {},
     // Preconfigure Claude Code subagents so Claude can delegate
     subAgents: [
       {
