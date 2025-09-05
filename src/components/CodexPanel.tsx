@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { CustomInput } from './CustomInput'
 
 export function CodexPanel() {
   const [repoArgs, setRepoArgs] = useState('')
@@ -32,24 +33,28 @@ export function CodexPanel() {
       <section>
         <h3>Codex Repo</h3>
         <div className="codex-control">
-          <input
-            value={repoArgs}
-            onChange={e => setRepoArgs(e.target.value)}
-            placeholder="arguments"
-          />
-          <button onClick={handleRepo}>Run</button>
+          <div style={{ flex: 1 }}>
+            <CustomInput
+              value={repoArgs}
+              onChange={setRepoArgs}
+              placeholder="arguments"
+            />
+          </div>
+          <button className="welcome-action" onClick={handleRepo}>Run</button>
         </div>
         {repoOutput && <pre className="codex-output">{repoOutput}</pre>}
       </section>
       <section>
         <h3>Codex Run</h3>
         <div className="codex-control">
-          <input
-            value={runArgs}
-            onChange={e => setRunArgs(e.target.value)}
-            placeholder="arguments"
-          />
-          <button onClick={handleRun}>Run</button>
+          <div style={{ flex: 1 }}>
+            <CustomInput
+              value={runArgs}
+              onChange={setRunArgs}
+              placeholder="arguments"
+            />
+          </div>
+          <button className="welcome-action" onClick={handleRun}>Run</button>
         </div>
         {runOutput && <pre className="codex-output">{runOutput}</pre>}
       </section>
