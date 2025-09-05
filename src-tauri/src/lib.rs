@@ -20,6 +20,11 @@ use terminal::{LspManager, TerminalManager};
 mod checkpoint;
 use checkpoint::*;
 
+mod codex_repo;
+mod codex_run;
+use codex_repo::codex_repo;
+use codex_run::codex_run;
+
 trait ModelHandler: Send {
     fn start(&mut self, app: tauri::AppHandle, project_dir: &str) -> Result<(), String>;
     fn send(&mut self, input: &str) -> Result<(), String>;
@@ -684,7 +689,9 @@ pub fn run() {
             clean_old_checkpoints,
             list_checkpoints,
             save_temp_image,
-            clone_repo
+            clone_repo,
+            codex_repo,
+            codex_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
