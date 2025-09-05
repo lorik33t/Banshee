@@ -63,6 +63,10 @@ export function Composer() {
   const [searchQuery, setSearchQuery] = useState('')
   const [recentlyUsed, setRecentlyUsed] = useState<AgentType[]>([])
   const pickerBtnRef = useRef<HTMLButtonElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const optionRefs = useRef<HTMLButtonElement[]>([])
+  const optionsRef = useRef<typeof agents[number][]>([])
+  const [activeOption, setActiveOption] = useState(-1)
   const [pickerPos, setPickerPos] = useState<{ left: number; top: number; width: number } | null>(null)
   const messages = useSession((s) => s.messages)
   const isStreaming = useSession((s) => s.isStreaming)
@@ -113,6 +117,63 @@ export function Composer() {
     window.addEventListener('mousedown', onDown)
     return () => window.removeEventListener('mousedown', onDown)
   }, [showAgentPicker])
+
+  // Manage focus within agent picker
+  useEffect(() => {
+    if (showAgentPicker) {
+      setActiveOption(-1)
+      setTimeout(() => searchInputRef.current?.focus(), 0)
+    }
+  }, [showAgentPicker])
+
+  useEffect(() => {
+    setActiveOption(-1)
+  }, [searchQuery])
+
+  const q = searchQuery.trim().toLowerCase()
+  const matches = (a: typeof agents[number]) =>
+    !q || a.id.includes(q) || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
+  const filteredAll = agents.filter(matches)
+  const filteredRecent = recentlyUsed
+    .map(id => agents.find(a => a.id === id)!)
+    .filter(a => !!a && matches(a))
+  const rest = filteredAll.filter(a => !filteredRecent.some(r => r.id === a.id))
+  optionsRef.current = [...filteredRecent, ...rest]
+  optionRefs.current = []
+  const activeId = activeOption >= 0 && optionsRef.current[activeOption]
+    ? `agent-option-${optionsRef.current[activeOption].id}`
+    : undefined
+
+  const renderOption = (agent: typeof agents[number], index: number) => (
+    <button
+      key={agent.id}
+      id={`agent-option-${agent.id}`}
+      role="option"
+      tabIndex={-1}
+      aria-selected={activeOption === index}
+      ref={el => (optionRefs.current[index] = el)}
+      className="agent-option"
+      onClick={() => chooseAgentFromPicker(agent.id as AgentType)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        width: '100%',
+        padding: '8px 10px',
+        borderRadius: 6,
+        background: selectedAgent === agent.id ? 'var(--bg-tertiary)' : 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        color: 'var(--fg-primary)'
+      }}
+    >
+      {React.createElement(agent.icon, { size: 18, style: { color: agent.color } })}
+      <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>@{agent.id}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{agent.description}</div>
+      </div>
+    </button>
+  )
 
   // Handle image paste on the textarea
   const handlePaste = async (e: React.ClipboardEvent) => {
@@ -695,6 +756,36 @@ export function Composer() {
     })
     setShowAgentPicker(false)
     setSearchQuery('')
+    setActiveOption(-1)
+    setTimeout(() => pickerBtnRef.current?.focus(), 0)
+  }
+
+  const handlePickerKeyDown = (e: React.KeyboardEvent) => {
+    const opts = optionsRef.current
+    if (e.key === 'ArrowDown') {
+      if (opts.length === 0) return
+      e.preventDefault()
+      const next = (activeOption + 1) % opts.length
+      setActiveOption(next)
+      optionRefs.current[next]?.focus()
+    } else if (e.key === 'ArrowUp') {
+      if (opts.length === 0) return
+      e.preventDefault()
+      const prev = (activeOption - 1 + opts.length) % opts.length
+      setActiveOption(prev)
+      optionRefs.current[prev]?.focus()
+    } else if (e.key === 'Enter') {
+      if (activeOption >= 0 && opts[activeOption]) {
+        e.preventDefault()
+        chooseAgentFromPicker(opts[activeOption].id as AgentType)
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setShowAgentPicker(false)
+      setSearchQuery('')
+      setActiveOption(-1)
+      setTimeout(() => pickerBtnRef.current?.focus(), 0)
+    }
   }
 
   const currentAgent = agents.find(a => a.id === selectedAgent)!
@@ -845,12 +936,14 @@ return (
                       maxHeight: 360,
                       overflowY: 'auto'
                     }}
+                    onKeyDown={handlePickerKeyDown}
                   >
                     {/* Search input */}
                     <div style={{ padding: 6 }}>
                       <input
                         type="text"
                         value={searchQuery}
+                        ref={searchInputRef}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search models…"
                         style={{
@@ -863,53 +956,22 @@ return (
                           padding: '0 10px',
                           outline: 'none'
                         }}
+                        aria-controls="agent-picker-listbox"
+                        aria-activedescendant={activeId}
                       />
                     </div>
-                    {(() => {
-                      const q = searchQuery.trim().toLowerCase()
-                      const matches = (a: typeof agents[number]) =>
-                        !q || a.id.includes(q) || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
-                      const filteredAll = agents.filter(matches)
-                      const filteredRecent = recentlyUsed
-                        .map(id => agents.find(a => a.id === id)!)
-                        .filter(a => !!a && matches(a))
-                      const rest = filteredAll.filter(a => !filteredRecent.some(r => r.id === a.id))
-                      const renderBtn = (agent: typeof agents[number]) => (
-                        <button
-                          key={agent.id}
-                          className="agent-option"
-                          onClick={() => chooseAgentFromPicker(agent.id as AgentType)}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            width: '100%',
-                            padding: '8px 10px',
-                            borderRadius: 6,
-                            background: selectedAgent === agent.id ? 'var(--bg-tertiary)' : 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: 'var(--fg-primary)'
-                          }}
-                        >
-                          {React.createElement(agent.icon, { size: 18, style: { color: agent.color } })}
-                          <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
-                            <div style={{ fontSize: 13, fontWeight: 600 }}>@{agent.id}</div>
-                            <div style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{agent.description}</div>
-                          </div>
-                        </button>
-                      )
-                      return (
-                        <>
-                          {filteredRecent.length > 0 && (
-                            <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Recently Used</div>
-                          )}
-                          {filteredRecent.map(renderBtn)}
-                          <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>All Models</div>
-                          {rest.map(renderBtn)}
-                        </>
-                      )
-                    })()}
+                    <div
+                      id="agent-picker-listbox"
+                      role="listbox"
+                      aria-activedescendant={activeId}
+                    >
+                      {filteredRecent.length > 0 && (
+                        <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Recently Used</div>
+                      )}
+                      {filteredRecent.map((a, i) => renderOption(a, i))}
+                      <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>All Models</div>
+                      {rest.map((a, i) => renderOption(a, i + filteredRecent.length))}
+                    </div>
                   </div>
                 </div>
               ),
