@@ -4,7 +4,6 @@ import * as monaco from 'monaco-editor'
 import { createPortal } from 'react-dom'
 import { useSession } from '../state/session'
 import { ModelRouter } from '../utils/modelRouter'
-import { parseClaudeEvents, clearDeduplicationCache } from '../utils/claudeParser'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
 import { listen as tauriListen } from '@tauri-apps/api/event'
@@ -237,7 +236,7 @@ export function Composer() {
         if (import.meta.env.DEV) {
           try { console.debug('[Composer] stream raw:', payload) } catch {}
         }
-        const events = parseClaudeEvents(payload)
+        const events = Array.isArray(payload) ? payload : [payload]
         if (import.meta.env.DEV) {
           try {
             console.debug(`[Composer] parsed ${events.length} events:`, events.map((e: any) => e.type))
@@ -379,8 +378,6 @@ export function Composer() {
           input: '/clear', 
           model: 'claude' 
         })
-        // Clear deduplication caches in the parser
-        clearDeduplicationCache()
         // Clear UI state after sending /clear
         const sessionStore = useSession.getState()
         sessionStore.clearConversation()
