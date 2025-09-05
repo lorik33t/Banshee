@@ -172,7 +172,7 @@ export type SessionState = {
     isTracking: boolean
   }
   ui: {
-    workbenchTab: 'diffs' | 'checkpoints'
+    workbenchTab: 'diffs' | 'checkpoints' | 'codex'
   }
 
   pushEvent: (e: SessionEvent) => void
@@ -182,7 +182,7 @@ export type SessionState = {
   rejectEdit: (id: string) => void
   selectEdit: (id?: string) => void
   resolvePermission: (allow: boolean, scope: 'once' | 'session' | 'project') => void
-  setWorkbenchTab: (tab: 'diffs' | 'checkpoints') => void
+  setWorkbenchTab: (tab: 'diffs' | 'checkpoints' | 'codex') => void
   setShowTerminal: (show: boolean) => void
   setStreaming: (streaming: boolean, model?: string) => void
   clearConversation: () => void
