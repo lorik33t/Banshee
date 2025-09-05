@@ -1,7 +1,8 @@
-use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty, Child};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child as ProcessChild, ChildStdout, Command as StdCommand, Stdio};
 use std::sync::{Arc, Mutex};
-use std::io::{Read, Write};
 use tauri::{AppHandle, Emitter};
 use std::thread;
 
@@ -167,5 +168,81 @@ impl TerminalManager {
             }
         }
         Ok(())
+    }
+}
+
+pub struct LspServer {
+    child: ProcessChild,
+    reader: BufReader<ChildStdout>,
+}
+
+pub struct LspManager {
+    servers: Mutex<HashMap<String, LspServer>>,
+}
+
+impl LspManager {
+    pub fn new() -> Self {
+        Self {
+            servers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn send_request(
+        &self,
+        lang: &str,
+        cmd: &str,
+        request: &str,
+    ) -> Result<String, String> {
+        let mut servers = self.servers.lock().unwrap();
+        if !servers.contains_key(lang) {
+            let mut child = StdCommand::new(cmd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn LSP server: {}", e))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "Failed to take stdout".to_string())?;
+            let reader = BufReader::new(stdout);
+            servers.insert(lang.to_string(), LspServer { child, reader });
+        }
+
+        let server = servers.get_mut(lang).unwrap();
+        let stdin = server
+            .child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "Failed to get stdin".to_string())?;
+        let msg = format!("Content-Length: {}\r\n\r\n{}", request.len(), request);
+        stdin
+            .write_all(msg.as_bytes())
+            .map_err(|e| format!("Failed to write to LSP server: {}", e))?;
+        stdin.flush().ok();
+
+        let mut header = String::new();
+        loop {
+            let mut line = String::new();
+            server
+                .reader
+                .read_line(&mut line)
+                .map_err(|e| format!("Failed to read LSP response: {}", e))?;
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            header.push_str(&line);
+        }
+        let len = header
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .ok_or_else(|| "Missing Content-Length".to_string())?;
+        let mut buf = vec![0u8; len];
+        server
+            .reader
+            .read_exact(&mut buf)
+            .map_err(|e| format!("Failed to read LSP body: {}", e))?;
+        let resp = String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8: {}", e))?;
+        Ok(resp)
     }
 }

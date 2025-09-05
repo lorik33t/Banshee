@@ -15,7 +15,7 @@ use claude_bridge::ClaudeBridge;
 mod claude_binary;
 
 mod terminal;
-use terminal::TerminalManager;
+use terminal::{LspManager, TerminalManager};
 
 mod checkpoint;
 use checkpoint::*;
@@ -142,6 +142,7 @@ impl ModelHandler for NodeModelHandler {
 static PROJECT_DIR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None));
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
+static LSP_MANAGER: Lazy<LspManager> = Lazy::new(|| LspManager::new());
 // Registry of model handlers
 static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send>>>> =
     Lazy::new(|| {
@@ -463,6 +464,18 @@ fn close_terminal(id: String) -> Result<(), String> {
     TERMINAL_MANAGER.close_terminal(&id)
 }
 
+#[derive(serde::Deserialize)]
+struct LspRequest {
+    language: String,
+    cmd: String,
+    request: String,
+}
+
+#[tauri::command]
+fn lsp_proxy(args: LspRequest) -> Result<String, String> {
+    LSP_MANAGER.send_request(&args.language, &args.cmd, &args.request)
+}
+
 // Terminal session persistence
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct TerminalSession {
@@ -653,6 +666,7 @@ pub fn run() {
             write_to_terminal,
             resize_terminal,
             close_terminal,
+            lsp_proxy,
             save_terminal_session,
             load_terminal_session,
             clear_terminal_session,
