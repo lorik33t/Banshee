@@ -1,5 +1,4 @@
 import { FolderOpen, GitBranch, Clock, Sparkles, Play } from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { useWorkspaceStore } from '../state/workspace'
 import { useState, useEffect } from 'react'
@@ -26,13 +25,15 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
   // No omnibar; actions are presented as simple tiles
 
   const openFolder = async () => {
+    if (!(window as any).__TAURI__) return
     try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
       const selected = await open({
         directory: true,
         multiple: false,
         title: 'Open Project Folder'
       })
-      
+
       if (selected) {
         onProjectOpen(selected as string)
       }
@@ -46,7 +47,9 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
   }
 
   const browseDest = async () => {
+    if (!(window as any).__TAURI__) return
     try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
       const parent = await open({ directory: true, multiple: false, title: 'Choose destination folder' })
       if (parent && typeof parent === 'string') setDestParent(parent)
     } catch (e) { /* ignore */ }
