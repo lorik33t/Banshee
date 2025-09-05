@@ -4,7 +4,7 @@ import { useSession } from '../state/session'
 import { useWorkspaceStore } from '../state/workspace'
 
 export function useProjectLifecycle() {
-  const [claudeReady, setClaudeReady] = useState(false)
+  const [codexReady, setCodexReady] = useState(false)
   const sessionStore = useSession()
   const { activeProjectId, getProject } = useWorkspaceStore()
   const activeProject = activeProjectId ? getProject(activeProjectId) : null
@@ -16,7 +16,7 @@ export function useProjectLifecycle() {
   }, [activeProject?.path, sessionStore.projectDir])
 
   const openProject = useCallback(async (path: string) => {
-    setClaudeReady(true)
+    setCodexReady(true)
 
     const { addProject, setActiveProject, projects } = useWorkspaceStore.getState()
     const projectName = path.split('/').pop() || path
@@ -33,37 +33,37 @@ export function useProjectLifecycle() {
 
     Promise.resolve().then(async () => {
       try {
-        await invoke('start_claude', { projectDir: path })
+        await invoke('start_codex', { projectDir: path })
       } catch (err) {
-        console.error('Failed to start Claude:', err)
+        console.error('Failed to start Codex:', err)
       }
     })
   }, [sessionStore])
 
   const closeProject = useCallback(async () => {
-    if (claudeReady) {
-      await invoke('stop_claude').catch(console.error)
+    if (codexReady) {
+      await invoke('stop_codex').catch(console.error)
     }
-    setClaudeReady(false)
+    setCodexReady(false)
     sessionStore.setProjectDir(undefined)
     const { setActiveProject } = useWorkspaceStore.getState()
     setActiveProject(null)
-  }, [claudeReady, sessionStore])
+  }, [codexReady, sessionStore])
 
   useEffect(() => {
-    if (activeProject && !claudeReady) {
+    if (activeProject && !codexReady) {
       openProject(activeProject.path)
     }
-  }, [activeProject?.id, claudeReady, openProject])
+  }, [activeProject?.id, codexReady, openProject])
 
   useEffect(() => {
     return () => {
-      if (claudeReady && (window as any).__TAURI__) {
-        invoke('stop_claude').catch(console.error)
+      if (codexReady && (window as any).__TAURI__) {
+        invoke('stop_codex').catch(console.error)
       }
     }
-  }, [claudeReady])
+  }, [codexReady])
 
-  return { activeProject, claudeReady, openProject, closeProject }
+  return { activeProject, codexReady, openProject, closeProject }
 }
 
