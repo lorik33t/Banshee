@@ -151,20 +151,6 @@ static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send + 
     Lazy::new(|| {
         let mut m: HashMap<String, Box<dyn ModelHandler + Send + 'static>> = HashMap::new();
         m.insert(
-            "gemini".into(),
-            Box::new(NodeModelHandler::new(
-                "gemini",
-                "model_handlers/gemini-handler.js",
-            )),
-        );
-        m.insert(
-            "qwen".into(),
-            Box::new(NodeModelHandler::new(
-                "qwen",
-                "model_handlers/qwen-handler.js",
-            )),
-        );
-        m.insert(
             "codex".into(),
             Box::new(NodeModelHandler::new(
                 "codex",

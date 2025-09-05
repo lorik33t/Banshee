@@ -38,9 +38,6 @@
       "icons/icon.icns"
     ],
     "resources": [
-      "model_handlers/claude-handler.js",
-      "model_handlers/gemini-handler.js",
-      "model_handlers/qwen-handler.js",
       "model_handlers/codex-handler.js"
     ]
   }
