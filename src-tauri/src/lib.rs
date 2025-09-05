@@ -142,8 +142,6 @@ impl ModelHandler for NodeModelHandler {
 static PROJECT_DIR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None));
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
-// Legacy single active process (used by older flows); kept for compatibility
-static ACTIVE_MODEL_PROCESS: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 // Registry of model handlers
 static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send>>>> =
     Lazy::new(|| {
@@ -284,12 +282,11 @@ fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<
 
 #[tauri::command]
 fn stop_claude() -> Result<(), String> {
-    // First, kill the active model process if any
+    // Stop all model handlers
     {
-        let mut process_guard = ACTIVE_MODEL_PROCESS.lock().unwrap();
-        if let Some(mut child) = process_guard.take() {
-            eprintln!("[RUST] Killing active model process");
-            let _ = child.kill();
+        let mut registry = MODEL_HANDLERS.lock().unwrap();
+        for handler in registry.values_mut() {
+            let _ = handler.stop();
         }
     }
 
