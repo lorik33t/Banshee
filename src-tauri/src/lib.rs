@@ -9,10 +9,8 @@ use std::sync::Mutex;
 use std::thread;
 use tauri::{Emitter, Manager};
 
-mod claude_bridge;
-use claude_bridge::ClaudeBridge;
-
-mod claude_binary;
+mod codex_bridge;
+use codex_bridge::CodexBridge;
 
 mod terminal;
 use terminal::{LspManager, TerminalManager};
@@ -145,20 +143,13 @@ impl ModelHandler for NodeModelHandler {
 }
 
 static PROJECT_DIR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-static CLAUDE: Lazy<Mutex<Option<ClaudeBridge>>> = Lazy::new(|| Mutex::new(None));
+static CODEX: Lazy<Mutex<Option<CodexBridge>>> = Lazy::new(|| Mutex::new(None));
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
 static LSP_MANAGER: Lazy<LspManager> = Lazy::new(|| LspManager::new());
 // Registry of model handlers
 static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send + 'static>>>> =
     Lazy::new(|| {
         let mut m: HashMap<String, Box<dyn ModelHandler + Send + 'static>> = HashMap::new();
-        m.insert(
-            "claude".into(),
-            Box::new(NodeModelHandler::new(
-                "claude",
-                "model_handlers/claude-handler.js",
-            )),
-        );
         m.insert(
             "gemini".into(),
             Box::new(NodeModelHandler::new(
@@ -217,23 +208,18 @@ async fn clone_repo(args: CloneArgs) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn start_claude(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
-    // Store the project directory for later use
+fn start_codex(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
     {
         let mut dir_guard = PROJECT_DIR.lock().unwrap();
         *dir_guard = project_dir.clone();
     }
 
-    // Always restart Claude bridge for new project directory to ensure proper isolation
-    let mut guard = CLAUDE.lock().unwrap();
-
-    // Stop existing bridge if it exists and project dir changed
+    let mut guard = CODEX.lock().unwrap();
     if let Some(mut bridge) = guard.take() {
         let _ = bridge.stop();
     }
 
-    // Create and start new bridge for the current project
-    let mut bridge = ClaudeBridge::new(app);
+    let mut bridge = CodexBridge::new(app);
     bridge.start(&project_dir)?;
     *guard = Some(bridge);
 
@@ -241,21 +227,13 @@ fn start_claude(app: tauri::AppHandle, project_dir: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn send_to_claude(_app: tauri::AppHandle, input: String) -> Result<(), String> {
-    eprintln!(
-        "[RUST] send_to_claude called with input length: {}",
-        input.len()
-    );
-
-    // Use the persistent Claude bridge
-    let mut bridge_guard = CLAUDE.lock().unwrap();
+fn send_to_codex(_app: tauri::AppHandle, input: String) -> Result<(), String> {
+    let mut bridge_guard = CODEX.lock().unwrap();
     if let Some(bridge) = bridge_guard.as_mut() {
-        // Send message to the persistent Claude process
         bridge.send_message(&input)?;
         Ok(())
     } else {
-        eprintln!("[RUST] Error: Claude bridge not initialized");
-        Err("Claude bridge not initialized. Please ensure a project is open.".into())
+        Err("Codex bridge not initialized. Please ensure a project is open.".into())
     }
 }
 
@@ -265,10 +243,6 @@ fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<
     eprintln!("[RUST] send_to_model called with model: {}", model);
     eprintln!("[RUST] Input length: {}", input.len());
 
-    // For Claude, use the persistent bridge
-    if model == "claude" {
-        return send_to_claude(app, input);
-    }
     let project_dir = PROJECT_DIR.lock().unwrap().clone();
     if project_dir.is_empty() {
         eprintln!("[RUST] Error: Project directory not set");
@@ -287,8 +261,7 @@ fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<
 }
 
 #[tauri::command]
-fn stop_claude() -> Result<(), String> {
-    // Stop all model handlers
+fn stop_codex() -> Result<(), String> {
     {
         let mut registry = MODEL_HANDLERS.lock().unwrap();
         for handler in registry.values_mut() {
@@ -296,42 +269,24 @@ fn stop_claude() -> Result<(), String> {
         }
     }
 
-    // Then stop the Claude bridge if it's running
-    let mut guard = CLAUDE.lock().unwrap();
+    let mut guard = CODEX.lock().unwrap();
     if let Some(mut bridge) = guard.take() {
-        eprintln!("[RUST] Stopping Claude bridge");
         let _ = bridge.stop();
     }
 
-    // Clear project directory
     let mut dir_guard = PROJECT_DIR.lock().unwrap();
     dir_guard.clear();
-    eprintln!("[RUST] Claude stopped and project directory cleared");
     Ok(())
 }
 
 #[tauri::command]
 fn stop_model(model: String) -> Result<(), String> {
     let m = model.to_lowercase();
-    if m == "claude" {
-        return stop_claude();
-    }
     let mut registry = MODEL_HANDLERS.lock().unwrap();
     if let Some(handler) = registry.get_mut(&m) {
         handler.stop()?;
     }
     Ok(())
-}
-
-#[tauri::command]
-fn restart_claude(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
-    eprintln!("[RUST] Restarting Claude for project: {}", project_dir);
-
-    // First, stop current Claude instance completely
-    stop_claude()?;
-
-    // Then start new instance
-    start_claude(app, project_dir)
 }
 
 #[tauri::command]
@@ -658,11 +613,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            start_claude,
-            send_to_claude,
+            start_codex,
+            send_to_codex,
             send_to_model,
-            stop_claude,
-            restart_claude,
+            stop_codex,
             stop_model,
             get_cwd,
             run_command,

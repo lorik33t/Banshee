@@ -35,7 +35,10 @@ impl CodexBridge {
 
     /// Send a message to Codex.
     pub fn send_message(&mut self, input: &str) -> Result<(), String> {
-        eprintln!("[CodexBridge] send_message with payload size: {}", input.len());
+        eprintln!(
+            "[CodexBridge] send_message with payload size: {}",
+            input.len()
+        );
 
         if self.project_dir.is_empty() {
             return Err("Project directory not set. Call start_codex first.".into());
@@ -61,7 +64,10 @@ impl CodexBridge {
                 }
             }
             Err(e) => {
-                eprintln!("[CodexBridge] Failed to parse JSON input, using raw as prompt: {}", e);
+                eprintln!(
+                    "[CodexBridge] Failed to parse JSON input, using raw as prompt: {}",
+                    e
+                );
                 prompt = Some(input.to_string());
             }
         }
@@ -76,7 +82,10 @@ impl CodexBridge {
         args.push(prompt.clone());
 
         // Spawn codex process
-        eprintln!("[CodexBridge] Spawning: codex {:?} (cwd: {})", args, self.project_dir);
+        eprintln!(
+            "[CodexBridge] Spawning: codex {:?} (cwd: {})",
+            args, self.project_dir
+        );
         let mut child = Command::new("codex")
             .args(&args)
             .current_dir(&self.project_dir)
@@ -96,8 +105,7 @@ impl CodexBridge {
                     if let Ok(l) = line {
                         if !l.trim().is_empty() {
                             let trimmed = l.trim().to_string();
-                            let is_dup =
-                                last_line.as_ref().map(|x| x == &trimmed).unwrap_or(false);
+                            let is_dup = last_line.as_ref().map(|x| x == &trimmed).unwrap_or(false);
                             if !is_dup {
                                 let _ = app_handle.emit("codex:stream", trimmed.clone());
                                 last_line = Some(trimmed);
@@ -158,4 +166,3 @@ impl CodexBridge {
         Ok(())
     }
 }
-
