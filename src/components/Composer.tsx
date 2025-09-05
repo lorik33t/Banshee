@@ -291,7 +291,7 @@ export function Composer() {
         }
         await tauriInvoke('send_to_model', {
           input: '/compress',
-          model: chosenModel
+          model: chosenModel.toLowerCase()
         })
       } catch (err) {
         // Fallback to Claude
@@ -475,7 +475,7 @@ export function Composer() {
               showReasoning: (codexCfg as any).showReasoning !== false
             }
           }
-          await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel })
+          await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel.toLowerCase() })
         }
         return
       }
@@ -507,7 +507,7 @@ export function Composer() {
         }
         await tauriInvoke('send_to_model', {
           input: JSON.stringify({ currentMessage: composedPrompt }),
-          model: chosenModel
+          model: chosenModel.toLowerCase()
         })
         return
       }
@@ -532,7 +532,7 @@ export function Composer() {
                 }
               } catch {}
             }
-            tauriInvoke('send_to_model', { input: JSON.stringify(subPayload), model: subModel })
+            tauriInvoke('send_to_model', { input: JSON.stringify(subPayload), model: subModel.toLowerCase() })
           }
         } catch {}
       }
@@ -576,7 +576,7 @@ export function Composer() {
             showReasoning: (codexCfg as any).showReasoning !== false
           }
         }
-        await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel })
+        await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel.toLowerCase() })
       }
     } catch (err) {
       // Fallback to Claude if non-Claude route failed
@@ -611,7 +611,7 @@ export function Composer() {
       const state = useSession.getState()
       const model = (state.streamingModel as any) || (activeModel as any) || 'claude'
       if (model) {
-        await tauriInvoke('stop_model', { model: String(model) })
+        await tauriInvoke('stop_model', { model: String(model).toLowerCase() })
       } else {
         await tauriInvoke('stop_claude')
       }

@@ -257,6 +257,7 @@ fn send_to_claude(_app: tauri::AppHandle, input: String) -> Result<(), String> {
 
 #[tauri::command]
 fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<(), String> {
+    let model = model.to_lowercase();
     eprintln!("[RUST] send_to_model called with model: {}", model);
     eprintln!("[RUST] Input length: {}", input.len());
 
