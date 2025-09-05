@@ -6285,3 +6285,31 @@ body {
     flex-direction: column;
     align-items: flex-start;
   }
+
+/* Codex panel styling */
+.codex-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.codex-control {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.codex-control .custom-input-container {
+  flex: 1;
+}
+
+.codex-output {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}

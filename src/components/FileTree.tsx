@@ -468,7 +468,7 @@ export function FileTree() {
           placeholder="Search..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="file-tree-search"
+          className="file-tree-search text-input"
           style={{ flex: 1, marginLeft: '8px' }}
         />
         <div className="file-tree-actions">
