@@ -1,10 +1,10 @@
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize, Child};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child as ProcessChild, ChildStdout, Command as StdCommand, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
 use std::thread;
+use tauri::{AppHandle, Emitter};
 
 pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
@@ -25,7 +25,7 @@ impl TerminalManager {
 
     pub fn create_terminal(&self, id: String, app: AppHandle) -> Result<(), String> {
         let pty_system = native_pty_system();
-        
+
         // Create a new PTY with a specific size
         let pair = pty_system
             .openpty(PtySize {
@@ -39,30 +39,30 @@ impl TerminalManager {
         // Get the user's shell or default to bash
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         eprintln!("Starting shell: {}", shell);
-        
+
         // Get project directory
         let project_dir = crate::PROJECT_DIR.lock().unwrap().clone();
-        
+
         // Build the command with interactive flags
         let mut cmd = CommandBuilder::new(&shell);
-        
+
         // Add interactive flag for the shell
         if shell.contains("bash") {
-            cmd.args(&["-i"]);  // Interactive mode
+            cmd.args(&["-i"]); // Interactive mode
         } else if shell.contains("zsh") {
-            cmd.args(&["-i"]);  // Interactive mode
+            cmd.args(&["-i"]); // Interactive mode
         } else if shell.contains("fish") {
-            cmd.args(&["-i"]);  // Interactive mode
+            cmd.args(&["-i"]); // Interactive mode
         }
-        
+
         if !project_dir.is_empty() {
             cmd.cwd(&project_dir);
         }
-        
+
         // Critical: Set TERM before spawning to ensure proper terminal setup
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        
+
         // Pass through PATH and other essential environment
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
@@ -73,13 +73,17 @@ impl TerminalManager {
         if let Ok(user) = std::env::var("USER") {
             cmd.env("USER", user);
         }
-        
+
         // Spawn the shell process
-        let child = pair.slave.spawn_command(cmd)
+        let child = pair
+            .slave
+            .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
 
         // Get a reader for the master PTY
-        let mut reader = pair.master.try_clone_reader()
+        let mut reader = pair
+            .master
+            .try_clone_reader()
             .map_err(|e| format!("Failed to clone reader: {}", e))?;
 
         // Start a thread to read output
@@ -98,7 +102,8 @@ impl TerminalManager {
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
                         // Debug what we're sending back
                         eprintln!("PTY output: {:?} (bytes: {:?})", output, &buffer[..n]);
-                        let _ = app_handle.emit(&format!("terminal:output:{}", terminal_id), output);
+                        let _ =
+                            app_handle.emit(&format!("terminal:output:{}", terminal_id), output);
                     }
                     Err(e) => {
                         eprintln!("Error reading from PTY: {}", e);
@@ -120,38 +125,51 @@ impl TerminalManager {
 
     pub fn write_to_terminal(&self, id: &str, data: &str) -> Result<(), String> {
         // Debug log what we're receiving
-        eprintln!("write_to_terminal received: {:?} (bytes: {:?})", data, data.as_bytes());
-        
+        eprintln!(
+            "write_to_terminal received: {:?} (bytes: {:?})",
+            data,
+            data.as_bytes()
+        );
+
         let mut terminals = self.terminals.lock().unwrap();
-        let terminal = terminals.get_mut(id)
+        let terminal = terminals
+            .get_mut(id)
             .ok_or_else(|| "Terminal not found".to_string())?;
 
-        let mut writer = terminal.master.take_writer()
+        let mut writer = terminal
+            .master
+            .take_writer()
             .map_err(|e| format!("Failed to get writer: {}", e))?;
-        
+
         // Write data to the terminal
-        writer.write_all(data.as_bytes())
+        writer
+            .write_all(data.as_bytes())
             .map_err(|e| format!("Failed to write to terminal: {}", e))?;
-        
+
         // Flush to ensure data is sent immediately
-        writer.flush()
+        writer
+            .flush()
             .map_err(|e| format!("Failed to flush terminal: {}", e))?;
-        
+
         Ok(())
     }
 
     pub fn resize_terminal(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
         let terminals = self.terminals.lock().unwrap();
-        let terminal = terminals.get(id)
+        let terminal = terminals
+            .get(id)
             .ok_or_else(|| "Terminal not found".to_string())?;
 
-        terminal.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        }).map_err(|e| format!("Failed to resize terminal: {}", e))?;
-        
+        terminal
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize terminal: {}", e))?;
+
         Ok(())
     }
 
@@ -159,9 +177,11 @@ impl TerminalManager {
         let mut terminals = self.terminals.lock().unwrap();
         if let Some(mut terminal) = terminals.remove(id) {
             // Kill the child process
-            terminal.child.kill()
+            terminal
+                .child
+                .kill()
                 .map_err(|e| format!("Failed to kill terminal process: {}", e))?;
-            
+
             // Wait for reader thread to finish
             if let Some(thread) = terminal.reader_thread.take() {
                 let _ = thread.join();
@@ -187,12 +207,7 @@ impl LspManager {
         }
     }
 
-    pub fn send_request(
-        &self,
-        lang: &str,
-        cmd: &str,
-        request: &str,
-    ) -> Result<String, String> {
+    pub fn send_request(&self, lang: &str, cmd: &str, request: &str) -> Result<String, String> {
         let mut servers = self.servers.lock().unwrap();
         if !servers.contains_key(lang) {
             let mut child = StdCommand::new(cmd)

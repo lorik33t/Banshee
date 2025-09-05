@@ -3,10 +3,7 @@ use std::process::Command;
 #[tauri::command]
 pub async fn codex_run(args: Vec<String>) -> Result<String, String> {
     let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new("codex")
-            .arg("run")
-            .args(&args)
-            .output()
+        Command::new("codex").arg("run").args(&args).output()
     })
     .await
     .map_err(|e| format!("failed to join codex run task: {}", e))?
@@ -23,4 +20,3 @@ pub async fn codex_run(args: Vec<String>) -> Result<String, String> {
         })
     }
 }
-
