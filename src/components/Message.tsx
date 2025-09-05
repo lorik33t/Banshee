@@ -1,6 +1,7 @@
 import { Copy, Check } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { MessageEvent } from '../state/session'
  
 interface MessageProps {
@@ -96,10 +97,10 @@ export function Message({ message }: MessageProps) {
           {content.map((part, i) => {
             if (part.type === 'markdown') {
               return (
-                <div 
-                  key={i} 
+                <div
+                  key={i}
                   className="message-text markdown-content"
-                  dangerouslySetInnerHTML={{ __html: marked(part.content) }}
+                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked(part.content)) }}
                 />
               )
             } else if (part.type === 'code') {
@@ -160,10 +161,10 @@ export function Message({ message }: MessageProps) {
         {content.map((part, i) => {
           if (part.type === 'markdown') {
             return (
-              <div 
-                key={i} 
+              <div
+                key={i}
                 className="message-text markdown-content"
-                dangerouslySetInnerHTML={{ __html: marked(part.content) }}
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked(part.content)) }}
               />
             )
           } else if (part.type === 'code') {
