@@ -93,7 +93,7 @@ export interface ClaudeSettings {
   includeDirs?: string[]
   autonomy?: number // 0-100
 
-  // Primary model defaults (already referenced by SettingsDialogV2)
+  // Primary model defaults
   defaultModel?: string
   apiKey?: string
   apiEndpoint?: string
