@@ -1,0 +1,21 @@
+{
+  "name": "Banshee",
+  "short_name": "Banshee",
+  "description": "Run, orchestrate, and observe CLI agents across providers with a unified desktop interface for managing agent workflows.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fefcf9",
+  "theme_color": "#0891b2",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
