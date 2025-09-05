@@ -1,4 +1,5 @@
-import MonacoEditor, { OnMount } from '@monaco-editor/react'
+import MonacoEditor from '@monaco-editor/react'
+import type { OnMount } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import { useEffect, type ClipboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
