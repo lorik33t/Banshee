@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio, Child};
 use std::thread;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use once_cell::sync::Lazy;
 use tauri::{Emitter, Manager};
 use std::collections::HashMap;
@@ -58,6 +58,28 @@ async fn clone_repo(args: CloneArgs) -> Result<String, String> {
     return Err(format!("git clone failed with status: {}", status));
   }
   Ok(dest_dir)
+}
+
+#[tauri::command]
+fn load_file(path: String) -> Result<String, String> {
+  let project_dir = PROJECT_DIR.lock().unwrap().clone();
+  let base = if project_dir.is_empty() { PathBuf::from(".") } else { PathBuf::from(project_dir) };
+  let p = PathBuf::from(&path);
+  let full = if p.is_absolute() { p } else { base.join(p) };
+  fs::read_to_string(&full).map_err(|e| format!("Failed to read file: {}", e))
+}
+
+#[tauri::command]
+fn save_file(path: String, content: String) -> Result<(), String> {
+  let project_dir = PROJECT_DIR.lock().unwrap().clone();
+  let base = if project_dir.is_empty() { PathBuf::from(".") } else { PathBuf::from(project_dir) };
+  let p = PathBuf::from(&path);
+  let full = if p.is_absolute() { p } else { base.join(p) };
+  if let Some(parent) = full.parent() {
+    fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent directory: {}", e))?;
+  }
+  fs::write(&full, content).map_err(|e| format!("Failed to write file: {}", e))?;
+  Ok(())
 }
 
 #[tauri::command]
@@ -575,6 +597,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       start_claude, send_to_claude, send_to_model, stop_claude, restart_claude, stop_model,
       get_cwd, run_command, execute_command,
+      load_file, save_file,
       terminal_create, terminal_write, terminal_resize, terminal_close,
       save_terminal_session, load_terminal_session, clear_terminal_session,
       load_settings, save_settings,

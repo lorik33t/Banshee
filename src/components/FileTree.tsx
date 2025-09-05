@@ -21,6 +21,7 @@ interface FileNode {
 export function FileTree() {
   const projectDir = useSession((s) => s.projectDir)
   const setProjectDir = useSession((s) => s.setProjectDir)
+  const setOpenFile = useSession(s => s.setOpenFile)
   const { activeProjectId, getProject } = useWorkspaceStore()
   const [nodes, setNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
@@ -49,7 +50,7 @@ export function FileTree() {
       addDiagnostic(`Loading directory: ${fullPath}`)
       
       // Step 1: Check Tauri readiness
-      if (!(window as any).__TAURI__) {
+      if (!('__TAURI__' in window)) {
         addDiagnostic('ERROR: Tauri API not available')
         throw new Error('Tauri API not available')
       }
@@ -198,13 +199,13 @@ export function FileTree() {
       const checkAndLoad = async () => {
         // Wait for Tauri to be ready
         let tauriCheckAttempts = 0
-        while (!(window as any).__TAURI__ && tauriCheckAttempts < 50) {
+        while (!('__TAURI__' in window) && tauriCheckAttempts < 50) {
           addDiagnostic(`Waiting for Tauri... attempt ${tauriCheckAttempts + 1}`)
           await new Promise(resolve => setTimeout(resolve, 100))
           tauriCheckAttempts++
         }
         
-        if (!(window as any).__TAURI__) {
+        if (!('__TAURI__' in window)) {
           addDiagnostic('ERROR: Tauri never became available after 5 seconds')
           setLoading(false)
           return
@@ -296,8 +297,7 @@ export function FileTree() {
   // Open file
   function openFile(node: FileNode) {
     if (node.kind === 'file') {
-      // TODO: Implement file opening
-      console.log('Open file:', node.path)
+      setOpenFile(node.path)
     }
   }
 
