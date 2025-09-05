@@ -165,6 +165,7 @@ export type SessionState = {
   streamingModel?: string
   streamingMessageId?: string
   pendingProjectDir?: string
+  openFile?: string
   // File tracking for checkpoints
   fileTracker: {
     originalContents: Map<string, string> // Original file contents before AI changes
@@ -183,6 +184,7 @@ export type SessionState = {
   selectEdit: (id?: string) => void
   resolvePermission: (allow: boolean, scope: 'once' | 'session' | 'project') => void
   setWorkbenchTab: (tab: 'diffs' | 'checkpoints') => void
+  setOpenFile: (file?: string) => void
   setShowTerminal: (show: boolean) => void
   setStreaming: (streaming: boolean, model?: string) => void
   clearConversation: () => void
@@ -205,6 +207,7 @@ export const useSession = create<SessionState>((set, get) => {
     isStreaming: false,
     streamingMessageId: undefined,
     pendingProjectDir: undefined,
+    openFile: undefined,
     fileTracker: {
       originalContents: new Map(),
       modifiedFiles: new Set(),
@@ -820,7 +823,7 @@ export const useSession = create<SessionState>((set, get) => {
     const currentDir = get().projectDir
 
     // INSTANT UI UPDATE - Don't block on file I/O
-    set({ projectDir: dir })
+    set({ projectDir: dir, openFile: undefined })
 
     // If switching to a different project, handle clearing/loading
     if (currentDir !== dir) {
@@ -841,7 +844,8 @@ export const useSession = create<SessionState>((set, get) => {
         cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
         isStreaming: false,
         streamingStartTime: undefined,
-        streamingModel: undefined
+        streamingModel: undefined,
+        openFile: undefined
       })
 
       // Load the new project's session asynchronously (non-blocking)
@@ -883,7 +887,9 @@ export const useSession = create<SessionState>((set, get) => {
   },
 
   setWorkbenchTab: (tab) => set((s) => ({ ui: { ...s.ui, workbenchTab: tab } })),
-  
+
+  setOpenFile: (file) => set({ openFile: file }),
+
   setShowTerminal: (show) => set({ showTerminal: show }),
   
   setStreaming: (streaming, model) => {
@@ -1035,6 +1041,7 @@ export const useSession = create<SessionState>((set, get) => {
       streamingStartTime: undefined,
       streamingModel: undefined,
       selectedEditId: undefined,
+      openFile: undefined,
       fileTracker: {
         originalContents: new Map(),
         modifiedFiles: new Set(),
