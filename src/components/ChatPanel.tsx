@@ -22,7 +22,8 @@ export function ChatPanel() {
     const text = input.trim()
     if (!text) return
     // Route model using the unified router
-    const { model, reason } = router.selectModelWithReason(text)
+    const { model: rawModel, reason } = router.selectModelWithReason(text)
+    const model = rawModel.toLowerCase()
     // emit user message to UI state with routing badge metadata
     pushEvent({ id: String(Date.now()), type: 'message', role: 'user', text, ts: Date.now(), model, routingReason: reason } as any)
     setInput('')
