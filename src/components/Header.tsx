@@ -105,15 +105,27 @@ const TabItem = React.memo(({ project, isActive, onClick, onClose }: {
     onClose(project.id, e)
   }, [project.id, onClose])
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onClick()
+    }
+  }, [onClick])
+
   return (
     <div
       className={`header-tab ${isActive ? 'active' : ''}`}
+      role="tab"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
+      aria-selected={isActive}
     >
       <span className="tab-name">{project.name}</span>
       <button
         className="tab-close"
         onClick={handleClose}
+        aria-label={`Close ${project.name}`}
       >
         <X size={14} />
       </button>
@@ -216,7 +228,7 @@ const ProjectTabs = React.memo(() => {
   }
 
   return (
-    <div className="header-tabs">
+    <div className="header-tabs" role="tablist">
       {projects.map(project => (
         <TabItem
           key={project.id}
