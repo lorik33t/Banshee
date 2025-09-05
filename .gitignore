@@ -27,5 +27,8 @@ Thumbs.db
 repos/.gemini-config
 repos/**/.env
 
+# Embedded external repos (ignore entire directory)
+repos/
+
 # Checkpoints
 .checkpoints/
