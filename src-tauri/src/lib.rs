@@ -444,22 +444,22 @@ fn execute_command(command: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn terminal_create(app: tauri::AppHandle, id: String) -> Result<(), String> {
+fn create_terminal(app: tauri::AppHandle, id: String) -> Result<(), String> {
     TERMINAL_MANAGER.create_terminal(id, app)
 }
 
 #[tauri::command]
-fn terminal_write(id: String, data: String) -> Result<(), String> {
+fn write_to_terminal(id: String, data: String) -> Result<(), String> {
     TERMINAL_MANAGER.write_to_terminal(&id, &data)
 }
 
 #[tauri::command]
-fn terminal_resize(id: String, rows: u16, cols: u16) -> Result<(), String> {
+fn resize_terminal(id: String, rows: u16, cols: u16) -> Result<(), String> {
     TERMINAL_MANAGER.resize_terminal(&id, rows, cols)
 }
 
 #[tauri::command]
-fn terminal_close(id: String) -> Result<(), String> {
+fn close_terminal(id: String) -> Result<(), String> {
     TERMINAL_MANAGER.close_terminal(&id)
 }
 
@@ -649,10 +649,10 @@ pub fn run() {
             get_cwd,
             run_command,
             execute_command,
-            terminal_create,
-            terminal_write,
-            terminal_resize,
-            terminal_close,
+            create_terminal,
+            write_to_terminal,
+            resize_terminal,
+            close_terminal,
             save_terminal_session,
             load_terminal_session,
             clear_terminal_session,
