@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { saveSession, loadSession, clearSession } from '../utils/sessionPersistence'
 import { invoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
-import { clearDeduplicationCache } from '../utils/claudeParser'
 
 export type Role = 'user' | 'assistant'
 export type ToolType = 'bash' | 'grep' | 'read' | 'write' | 'web' | 'mcp' | 'task'
@@ -916,7 +915,7 @@ export const useSession = create<SessionState>((set, get) => {
           streamingModel: undefined
         })
 
-        // Load the new project's session asynchronously and restart Claude
+        // Load the new project's session asynchronously and restart Codex
         Promise.resolve().then(() => {
           const persisted = loadSession(pending)
           if (persisted.messages && persisted.messages.length > 0) {
@@ -928,9 +927,8 @@ export const useSession = create<SessionState>((set, get) => {
               cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 }
             })
           }
-          try { clearDeduplicationCache() } catch {}
           if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-            invoke('restart_claude', { projectDir: pending }).catch(() => {})
+            invoke('restart_codex', { projectDir: pending }).catch(() => {})
           }
         })
       }
@@ -943,14 +941,14 @@ export const useSession = create<SessionState>((set, get) => {
     // Stop any streaming first
     set({ isStreaming: false })
     
-    // Stop Claude backend and restart it
+    // Stop Codex backend and restart it
     if (typeof window !== 'undefined' && (window as any).__TAURI__) {
       const projectDir = state.projectDir || ''
       
-      // Stop Claude completely
+      // Stop Codex completely
       // Use atomic restart for better reliability
       if (projectDir) {
-        invoke('restart_claude', { projectDir }).then(() => {
+        invoke('restart_codex', { projectDir }).then(() => {
           // Clear all state after restart
           set({
             events: [],
@@ -967,10 +965,10 @@ export const useSession = create<SessionState>((set, get) => {
           // Clear persisted session
           clearSession(projectDir)
         }).catch((err) => {
-          console.error('Failed to restart Claude:', err)
+          console.error('Failed to restart Codex:', err)
         })
       } else {
-        invoke('stop_claude').then(() => {
+        invoke('stop_codex').then(() => {
           set({
             events: [],
             messages: [],
@@ -984,7 +982,7 @@ export const useSession = create<SessionState>((set, get) => {
           })
           clearSession(projectDir)
         }).catch((err) => {
-          console.error('Failed to stop Claude:', err)
+          console.error('Failed to stop Codex:', err)
         })
       }
     } else {

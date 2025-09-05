@@ -19,7 +19,7 @@ export default function App() {
   const [sidePanelOpen, setSidePanelOpen] = useState(false)
   const [sidePanelContent, setSidePanelContent] = useState<'files' | 'diff'>('diff')
   const [settingsView, setSettingsView] = useState(false)
-  const { activeProject, claudeReady, openProject, closeProject } = useProjectLifecycle()
+  const { activeProject, codexReady, openProject, closeProject } = useProjectLifecycle()
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
     const saved = localStorage.getItem('leftSidebarOpen')
     return saved !== 'false'
@@ -57,7 +57,7 @@ export default function App() {
     )
   }
 
-  // If settings view is open, show only settings (regardless of Claude status)
+  // If settings view is open, show only settings (regardless of Codex status)
   if (settingsView) {
     return (
       <div className="app settings-view">
@@ -66,8 +66,8 @@ export default function App() {
     )
   }
 
-  // Show loading screen while Claude is starting
-  if (!claudeReady) {
+  // Show loading screen while Codex is starting
+  if (!codexReady) {
     return (
       <div className="app" style={{
         display: 'flex',
