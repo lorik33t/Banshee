@@ -1,17 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useSession } from '../state/session';
-
-interface CommandEntry {
-  command: string;
-  output: string;
-  exit_code: number;
-  timestamp: number;
-}
 
 export function TerminalView2() {
   // Session-only state - no persistence
-  const [entries, setEntries] = useState<CommandEntry[]>([]);
+  const [entries, setEntries] = useState<string[]>([]);
   const [currentInput, setCurrentInput] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
   const [sessionHistory, setSessionHistory] = useState<string[]>([]); // Only this session
@@ -19,12 +13,12 @@ export function TerminalView2() {
   // Initialize workingDir from session immediately to avoid race conditions
   const initialProjectDir = useSession.getState().projectDir;
   const [workingDir, setWorkingDir] = useState(initialProjectDir || '');
-  const [isExecuting, setIsExecuting] = useState(false);
   
   const hiddenInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const projectDir = useSession((s) => s.projectDir);
   const showTerminal = useSession((s) => s.showTerminal);
+  const terminalIdRef = useRef('');
   
   // Initialize and keep working directory in sync with active project
   useEffect(() => {
@@ -69,83 +63,21 @@ export function TerminalView2() {
   useEffect(() => {
     hiddenInputRef.current?.focus();
   }, []);
+
+  // Create terminal session and listen for output
+  useEffect(() => {
+    const id = crypto.randomUUID();
+    terminalIdRef.current = id;
+    invoke('create_terminal', { id });
+    const unlistenPromise = listen<string>(`terminal:output:${id}`, event => {
+      setEntries(prev => [...prev, event.payload]);
+    });
+    return () => {
+      unlistenPromise.then((f) => f());
+      invoke('close_terminal', { id });
+    };
+  }, []);
   
-  // Execute command
-  const executeCommand = async (command: string) => {
-    if (!command.trim()) return;
-    
-    // Handle built-in commands
-    if (command.trim() === 'clear') {
-      setEntries([]);
-      return;
-    }
-    
-    setIsExecuting(true);
-    const timestamp = Date.now();
-    
-    try {
-      // If workingDir isn't ready, try to initialize from projectDir or show a helpful message
-      if (!workingDir) {
-        if (projectDir) {
-          setWorkingDir(projectDir);
-          setEntries(prev => [...prev, {
-            command,
-            output: `Initializing terminal in project: ${projectDir}`,
-            exit_code: 0,
-            timestamp
-          }]);
-          setIsExecuting(false);
-          setHistoryIndex(-1);
-          return;
-        } else {
-          setEntries(prev => [...prev, {
-            command,
-            output: 'No project open. Use Open Folder to select a project before running terminal commands.',
-            exit_code: 1,
-            timestamp
-          }]);
-          setIsExecuting(false);
-          setHistoryIndex(-1);
-          return;
-        }
-      }
-      // Execute command with current working directory
-      const result = await invoke<{ output: string; exit_code: number; cwd: string }>('run_command', {
-        command: command.trim(),
-        cwd: workingDir
-      });
-      
-      // Update working directory if command succeeded and changed it
-      if (result.cwd && result.cwd !== workingDir) {
-        setWorkingDir(result.cwd);
-      }
-      
-      // Add entry
-      setEntries(prev => [...prev, {
-        command,
-        output: result.output,
-        exit_code: result.exit_code,
-        timestamp
-      }]);
-      
-      // Add to SESSION-ONLY history (not persistent)
-      setSessionHistory(prev => {
-        const newHistory = [command, ...prev.filter(cmd => cmd !== command)];
-        return newHistory.slice(0, 50); // Keep last 50 commands in this session only
-      });
-      
-    } catch (error) {
-      setEntries(prev => [...prev, {
-        command,
-        output: `Error: ${error}`,
-        exit_code: 1,
-        timestamp
-      }]);
-    }
-    
-    setIsExecuting(false);
-    setHistoryIndex(-1);
-  };
   
   // Handle keyboard input with proper text editing
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -155,13 +87,24 @@ export function TerminalView2() {
     }
     
     e.preventDefault();
-    
+
     if (e.key === 'Enter') {
       if (currentInput.trim()) {
-        executeCommand(currentInput);
+        if (currentInput.trim() === 'clear') {
+          setEntries([]);
+        } else {
+          if (terminalIdRef.current) {
+            invoke('write_to_terminal', { id: terminalIdRef.current, data: currentInput + '\n' });
+          }
+          setSessionHistory(prev => {
+            const newHistory = [currentInput, ...prev.filter(cmd => cmd !== currentInput)];
+            return newHistory.slice(0, 50);
+          });
+        }
       }
       setCurrentInput('');
       setCursorPosition(0);
+      setHistoryIndex(-1);
     } else if (e.key === 'Backspace') {
       if (cursorPosition > 0) {
         const newInput = currentInput.slice(0, cursorPosition - 1) + currentInput.slice(cursorPosition);
@@ -204,10 +147,18 @@ export function TerminalView2() {
         setCursorPosition(0);
       }
     } else if (e.ctrlKey && e.key === 'c') {
-      // Ctrl+C - clear current input
+      // Ctrl+C - send interrupt signal
+      if (terminalIdRef.current) {
+        invoke('write_to_terminal', { id: terminalIdRef.current, data: '\u0003' });
+      }
       setCurrentInput('');
       setCursorPosition(0);
       setHistoryIndex(-1);
+    } else if (e.ctrlKey && e.key === 'd') {
+      // Ctrl+D - send EOF
+      if (terminalIdRef.current) {
+        invoke('write_to_terminal', { id: terminalIdRef.current, data: '\u0004' });
+      }
     } else if (e.ctrlKey && e.key === 'l') {
       // Ctrl+L - clear terminal
       setEntries([]);
@@ -246,51 +197,6 @@ export function TerminalView2() {
     return `${dir} $ `;
   };
   
-  // Format output for display
-  const formatOutput = (output: string, command: string) => {
-    if (!output) return '';
-    
-    // Clean up output
-    const cleaned = output
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .trim();
-    
-    // Smart formatting for common commands
-    const cmd = command.trim().split(' ')[0];
-    
-    // Format directory listings in columns
-    if (cmd === 'ls' || cmd === 'll' || cmd === 'dir') {
-      const items = cleaned.split('\n').filter(line => line.trim());
-      
-      // If it's a detailed listing (ls -l), keep line format
-      if (items.some(item => item.match(/^[drwx-]{10}/) || item.includes('total '))) {
-        return cleaned;
-      }
-      
-      // For simple ls, format in columns to use horizontal space
-      if (items.length > 1) {
-        // Estimate available characters based on scroll container width
-        const containerWidthPx = scrollRef.current?.clientWidth ?? 800;
-        const charWidthPx = 8; // approx monospace char width
-        const terminalWidth = Math.max(40, Math.floor(containerWidthPx / charWidthPx));
-
-        const maxItemLength = Math.max(...items.map(item => item.length));
-        const columnWidth = Math.max(maxItemLength + 2, 12); // minimal spacing between columns
-        const columnsCount = Math.max(1, Math.floor(terminalWidth / columnWidth));
-
-        let formatted = '';
-        for (let i = 0; i < items.length; i += columnsCount) {
-          const row = items.slice(i, i + columnsCount);
-          const paddedRow = row.map(item => item.padEnd(columnWidth)).join('');
-          formatted += paddedRow.trimEnd() + '\n';
-        }
-        return formatted.trim();
-      }
-    }
-    
-    return cleaned;
-  };
   
   // Render input with cursor
   const renderInputWithCursor = () => {
@@ -323,9 +229,8 @@ export function TerminalView2() {
           <span className="terminal2-session-info">• Session-only history</span>
         </div>
         <div className="terminal2-controls">
-          <button 
+          <button
             onClick={() => setEntries([])}
-            disabled={isExecuting}
           >
             Clear
           </button>
@@ -333,27 +238,17 @@ export function TerminalView2() {
       </div>
       
       <div className="terminal2-body" ref={scrollRef}>
-        {/* Command entries */}
         {entries.map((entry, idx) => (
-          <div key={idx} className="terminal-entry">
-            <div className="terminal-command-line">
-              <span className="terminal-prompt">{getPrompt()}</span>
-              <span className="terminal-command">{entry.command}</span>
-            </div>
-            {entry.output && (
-              <pre className={`terminal-output ${entry.exit_code !== 0 ? 'error' : ''}`}>
-                {formatOutput(entry.output, entry.command)}
-              </pre>
-            )}
-          </div>
+          <pre key={idx} className="terminal-output">
+            {entry}
+          </pre>
         ))}
-        
+
         {/* Current input line */}
         <div className="terminal-entry current-input">
           <div className="terminal-command-line">
             <span className="terminal-prompt">{getPrompt()}</span>
             {renderInputWithCursor()}
-            {isExecuting && <span className="terminal-executing">executing...</span>}
           </div>
         </div>
       </div>
