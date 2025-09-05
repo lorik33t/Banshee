@@ -5,7 +5,7 @@ import { ToolExecution } from './ToolExecution'
 import { ThinkingOutput } from './ThinkingOutput'
 import { TerminalView2 } from './TerminalView2'
 import { StreamingLoader } from './StreamingLoader'
-import type { MessageEvent, ThinkingEvent } from '../state/session'
+import type { MessageEvent, ThinkingEvent, SessionEvent } from '../state/session'
 
 type ConversationItem = 
   | { type: 'message'; event: MessageEvent }
@@ -27,7 +27,7 @@ export function ChatView() {
   // On first mount, ensure streaming is off
   useEffect(() => {
     setStreaming(false)
-  }, [])
+  }, [setStreaming])
 
   useEffect(() => {
     // Auto-scroll to bottom
@@ -61,7 +61,9 @@ export function ChatView() {
   }, [showTerminal, setShowTerminal, isStreaming])
 
   // Sort events chronologically by ts to avoid insertion-order glitches
-  const orderedEvents = [...events].sort((a: any, b: any) => (a.ts ?? 0) - (b.ts ?? 0))
+  const orderedEvents = [...events].sort(
+    (a: SessionEvent, b: SessionEvent) => (a.ts ?? 0) - (b.ts ?? 0)
+  )
   
   // Group messages and other events into conversation items
   const items: ConversationItem[] = []

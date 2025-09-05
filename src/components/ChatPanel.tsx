@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSession } from '../state/session'
+import type React from 'react'
+import { useSession, type MessageEvent } from '../state/session'
 import { ModelRouter } from '../utils/modelRouter'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 
@@ -25,7 +26,16 @@ export function ChatPanel() {
     const { model: rawModel, reason } = router.selectModelWithReason(text)
     const model = rawModel.toLowerCase()
     // emit user message to UI state with routing badge metadata
-    pushEvent({ id: String(Date.now()), type: 'message', role: 'user', text, ts: Date.now(), model, routingReason: reason } as any)
+    const messageEvent: MessageEvent = {
+      id: String(Date.now()),
+      type: 'message',
+      role: 'user',
+      text,
+      ts: Date.now(),
+      model,
+      routingReason: reason
+    }
+    pushEvent(messageEvent)
     setInput('')
     // send to backend unified command so non-Claude models use their own handlers
     try {
@@ -33,14 +43,14 @@ export function ChatPanel() {
         input: JSON.stringify({ currentMessage: text }),
         model
       })
-    } catch (e) {
+    } catch {
       // Best-effort fallback to Claude on error
       try {
         await tauriInvoke('send_to_model', {
           input: JSON.stringify({ currentMessage: text }),
           model: 'claude'
         })
-      } catch {}
+      } catch { /* ignore error */ }
     }
   }
 
@@ -63,8 +73,8 @@ export function ChatPanel() {
             rows={1}
             placeholder="Describe your goal… Press Enter to send"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInput(e.target.value)}
+            onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
             }}
           />
