@@ -99,7 +99,27 @@ export default function App() {
             <aside className="left-sidebar" id="left-sidebar">
               <FileTree />
             </aside>
-            <div className="resizer" onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
+            <div
+              className="resizer"
+              tabIndex={0}
+              aria-label="Resize left sidebar"
+              onKeyDown={e => {
+                const start = document.documentElement.style.getPropertyValue('--ls-width') || '280px'
+                const current = parseInt(start)
+                const step = 10
+                let next = current
+                if (e.key === 'ArrowLeft') {
+                  next = Math.max(220, current - step)
+                } else if (e.key === 'ArrowRight') {
+                  next = Math.min(480, current + step)
+                } else {
+                  return
+                }
+                document.documentElement.style.setProperty('--ls-width', next + 'px')
+                localStorage.setItem('ls-width', String(next))
+                e.preventDefault()
+              }}
+              onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
               const startX = e.clientX
               const start = document.documentElement.style.getPropertyValue('--ls-width') || '280px'
               const startPx = parseInt(start)
@@ -111,7 +131,8 @@ export default function App() {
               function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
               window.addEventListener('mousemove', onMove)
               window.addEventListener('mouseup', onUp)
-            }} />
+            }}
+            />
           </>
         )}
         <div className="chat-container">
@@ -120,7 +141,27 @@ export default function App() {
         </div>
         {rightSidebarOpen && (
           <>
-            <div className="resizer" onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
+            <div
+              className="resizer"
+              tabIndex={0}
+              aria-label="Resize workbench"
+              onKeyDown={e => {
+                const start = document.documentElement.style.getPropertyValue('--wb-width') || '420px'
+                const current = parseInt(start)
+                const step = 10
+                let next = current
+                if (e.key === 'ArrowLeft') {
+                  next = Math.min(640, current + step)
+                } else if (e.key === 'ArrowRight') {
+                  next = Math.max(360, current - step)
+                } else {
+                  return
+                }
+                document.documentElement.style.setProperty('--wb-width', next + 'px')
+                localStorage.setItem('wb-width', String(next))
+                e.preventDefault()
+              }}
+              onMouseDown={(e: ReactMouseEvent<HTMLDivElement>) => {
               const startX = e.clientX
               const start = document.documentElement.style.getPropertyValue('--wb-width') || '420px'
               const startPx = parseInt(start)
@@ -133,7 +174,8 @@ export default function App() {
               function onUp() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
               window.addEventListener('mousemove', onMove)
               window.addEventListener('mouseup', onUp)
-            }} />
+            }}
+            />
             <Workbench />
           </>
         )}
