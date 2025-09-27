@@ -36,7 +36,7 @@ export function CodexPanel() {
           <div style={{ flex: 1 }}>
             <CustomInput
               value={repoArgs}
-              onChange={setRepoArgs}
+              onChange={(value) => setRepoArgs(String(value))}
               placeholder="arguments"
             />
           </div>
@@ -50,7 +50,7 @@ export function CodexPanel() {
           <div style={{ flex: 1 }}>
             <CustomInput
               value={runArgs}
-              onChange={setRunArgs}
+              onChange={(value) => setRunArgs(String(value))}
               placeholder="arguments"
             />
           </div>
@@ -63,4 +63,3 @@ export function CodexPanel() {
 }
 
 export default CodexPanel
-

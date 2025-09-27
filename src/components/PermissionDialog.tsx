@@ -19,6 +19,11 @@ export function PermissionDialog() {
 
   const open = !!pending
   const tools = useMemo(() => (pending?.tools || []).map(t => String(t)), [pending])
+  const details = pending?.details || {}
+  const command = typeof details.command === 'string' ? details.command : undefined
+  const cwd = typeof details.cwd === 'string' ? details.cwd : undefined
+  const reason = typeof details.reason === 'string' ? details.reason : undefined
+  const files: string[] = Array.isArray(details.files) ? details.files : []
   if (!open || !pending) return null
 
   return (
@@ -58,6 +63,36 @@ export function PermissionDialog() {
               <button className={`settings-btn ${scope === 'project' ? 'primary' : 'secondary'}`} onClick={() => setScope('project')}>This Project</button>
             </div>
           </div>
+
+          {(reason || command || cwd || files.length > 0) && (
+            <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-light)', fontSize: 12, color: 'var(--text-secondary)' }}>
+              {reason && (
+                <div style={{ marginBottom: 6 }}>
+                  <strong style={{ fontWeight: 600 }}>Reason:</strong> {reason}
+                </div>
+              )}
+              {command && (
+                <div style={{ marginBottom: 6 }}>
+                  <strong style={{ fontWeight: 600 }}>Command:</strong> <code style={{ background: 'var(--bg-tertiary)', padding: '2px 4px', borderRadius: 4 }}>{command}</code>
+                </div>
+              )}
+              {cwd && (
+                <div style={{ marginBottom: 6 }}>
+                  <strong style={{ fontWeight: 600 }}>Directory:</strong> {cwd}
+                </div>
+              )}
+              {files.length > 0 && (
+                <div>
+                  <strong style={{ fontWeight: 600 }}>Files:</strong>
+                  <ul style={{ marginTop: 4, marginLeft: 16 }}>
+                    {files.map((file, idx) => (
+                      <li key={idx}>{file}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
             <button className="settings-btn secondary" onClick={() => resolve(false, scope)}>Deny</button>

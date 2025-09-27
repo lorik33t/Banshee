@@ -4,6 +4,7 @@ export interface PersistedSession {
   messages: any[]
   events: any[]
   tools?: Record<string, any>  // Add tools to persistence
+  toolOrder?: string[]
   edits?: any[]  // Add edits too
   cost: {
     usd: number
@@ -72,6 +73,7 @@ export function loadSession(projectPath?: string): PersistedSession {
     messages: [],
     events: [],
     tools: {},
+    toolOrder: [],
     edits: [],
     cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
     lastUpdated: new Date().toISOString(),

@@ -124,6 +124,7 @@ const runNext = () => {
     promptArg
   ];
   // Do not emit tool events for Codex; treat it as a first-class agent stream
+  // The Rust backend handles tool events, so we skip them here to prevent duplicates
   const codex = spawn(codexPath, codexArgs, {
     cwd: process.cwd(),
     env: {

@@ -35,3 +35,6 @@ chrono = { version = "0.4", features = ["serde"] }
 libc = "0.2"
 base64 = "0.22.1"
 dirs = "5.0"
+codex-protocol = { path = "../vendors/codex/codex-rs/protocol" }
+uuid = { version = "1", features = ["v4"] }
+shlex = "1.3"

@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
-    "start": "vite"
+    "start": "vite",
+    "bootstrap:codex": "node scripts/bootstrap-codex.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

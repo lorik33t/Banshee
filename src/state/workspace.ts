@@ -37,12 +37,33 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           id,
           lastOpened: Date.now()
         }
-        
-        set(state => ({
-          projects: [...state.projects, project],
-          recentProjects: [project, ...state.recentProjects.filter(p => p.id !== id)].slice(0, 10)
-        }))
-        
+
+        try {
+          set(state => {
+            // Limit total projects to prevent localStorage quota issues
+            const maxProjects = 50
+            const currentProjects = state.projects.length >= maxProjects
+              ? state.projects.slice(-maxProjects + 1) // Keep only the most recent ones
+              : state.projects
+
+            return {
+              projects: [...currentProjects, project],
+              recentProjects: [project, ...state.recentProjects.filter(p => p.id !== id)].slice(0, 10)
+            }
+          })
+        } catch (error) {
+          console.warn('[Workspace] localStorage quota exceeded, clearing old projects:', error)
+          // If still failing, clear more aggressively
+          try {
+            set(() => ({
+              projects: [project], // Start fresh with just this project
+              recentProjects: [project].slice(0, 10)
+            }))
+          } catch (fallbackError) {
+            console.error('[Workspace] Critical localStorage error:', fallbackError)
+          }
+        }
+
         return id
       },
       

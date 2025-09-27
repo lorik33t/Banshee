@@ -1,196 +1,291 @@
-import { Paperclip, Command, StopCircle, Sparkles, Zap, Bot, ArrowUp, Mic, Image, Terminal as TerminalIcon, BarChart3 } from 'lucide-react'
-import React, { useState, useRef, useEffect } from 'react'
-import * as monaco from 'monaco-editor'
-import { createPortal } from 'react-dom'
+import { Paperclip, Image as ImageIcon, Mic, Terminal as TerminalIcon, StopCircle, Send, ChevronDown } from 'lucide-react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useSession } from '../state/session'
-import { ModelRouter } from '../utils/modelRouter'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
 import { listen as tauriListen } from '@tauri-apps/api/event'
 import { useSettings } from '../state/settings'
-import { UsageStatsModal } from './UsageStatsModal'
-import { Editor } from './Editor'
-
-type AgentType = 'claude' | 'gemini' | 'qwen' | 'codex'
+import type { SessionEvent } from '../state/session'
 
 const agents = [
-  { 
-    id: 'claude', 
-    name: 'Claude', 
-    icon: Bot, 
-    color: '#0891b2', 
-    description: 'Advanced reasoning & coding'
-  },
-  { 
-    id: 'gemini', 
-    name: 'Gemini', 
-    icon: Sparkles, 
-    color: '#8b5cf6', 
-    description: 'Fast & versatile • Free tier available'
-  },
-  { 
-    id: 'qwen', 
-    name: 'Qwen', 
-    icon: Zap, 
-    color: '#f59e0b', 
-    description: 'Code specialist • Free tier available'
-  },
   {
     id: 'codex',
     name: 'Codex',
-    icon: Bot,
     color: '#10b981',
     description: 'OpenAI Codex CLI • Streaming'
   }
 ]
 
+type ReasoningEffortLevel = 'minimal' | 'low' | 'medium' | 'high'
+
+type CodexModel = {
+  id: string
+  label: string
+  description: string
+  color: string
+  slug: string
+  effort?: ReasoningEffortLevel
+}
+
+type ModeOptionId = 'chat-plan' | 'agent' | 'agent-full'
+
+type ApprovalPolicyValue = 'on-request' | 'on-failure' | 'never'
+type SandboxModeValue = 'workspace-write' | 'danger-full-access' | 'read-only'
+
+type ModeOption = {
+  id: ModeOptionId
+  label: string
+  autoAccept: boolean
+  approvalPolicy: ApprovalPolicyValue
+  sandboxMode: SandboxModeValue
+}
+
+const CODEX_MODELS: CodexModel[] = [
+  {
+    id: 'gpt-5-codex-low',
+    label: 'gpt-5-codex low',
+    description: 'Codex automation tuned for low reasoning effort.',
+    color: '#6366f1',
+    slug: 'gpt-5-codex',
+    effort: 'low'
+  },
+  {
+    id: 'gpt-5-codex-medium',
+    label: 'gpt-5-codex medium',
+    description: 'Balanced Codex automation profile.',
+    color: '#7c3aed',
+    slug: 'gpt-5-codex'
+  },
+  {
+    id: 'gpt-5-codex-high',
+    label: 'gpt-5-codex high',
+    description: 'Codex automation with maximum reasoning depth.',
+    color: '#a855f7',
+    slug: 'gpt-5-codex',
+    effort: 'high'
+  },
+  {
+    id: 'gpt-5-minimal',
+    label: 'gpt-5 minimal',
+    description: 'Fastest responses with limited reasoning; good for lightweight tasks.',
+    color: '#0ea5e9',
+    slug: 'gpt-5',
+    effort: 'minimal'
+  },
+  {
+    id: 'gpt-5-low',
+    label: 'gpt-5 low',
+    description: 'Balances speed with some reasoning for straightforward prompts.',
+    color: '#14b8a6',
+    slug: 'gpt-5',
+    effort: 'low'
+  },
+  {
+    id: 'gpt-5-medium',
+    label: 'gpt-5 medium',
+    description: 'Default mix of reasoning depth and latency.',
+    color: '#f97316',
+    slug: 'gpt-5',
+    effort: 'medium'
+  },
+  {
+    id: 'gpt-5-high',
+    label: 'gpt-5 high',
+    description: 'Maximum reasoning depth for complex or ambiguous problems.',
+    color: '#ef4444',
+    slug: 'gpt-5',
+    effort: 'high'
+  }
+]
+
+const DEFAULT_MODEL_ID = 'gpt-5-medium'
+const MODE_OPTIONS: ModeOption[] = [
+  {
+    id: 'chat-plan',
+    label: 'Chat or Plan',
+    autoAccept: false,
+    approvalPolicy: 'on-request',
+    sandboxMode: 'workspace-write'
+  },
+  {
+    id: 'agent',
+    label: 'Agent',
+    autoAccept: false,
+    approvalPolicy: 'on-failure',
+    sandboxMode: 'workspace-write'
+  },
+  {
+    id: 'agent-full',
+    label: 'Agent (full access)',
+    autoAccept: true,
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access'
+  }
+]
+const DEFAULT_MODE_ID: ModeOptionId = 'agent-full'
+
 export function Composer() {
   const [input, setInput] = useState('')
   const [showAgents, setShowAgents] = useState(false)
-  const [selectedAgent, setSelectedAgent] = useState<AgentType>('claude')
-  const [router] = useState(() => new ModelRouter())
   const [isFocused, setIsFocused] = useState(false)
   const [attachedImages, setAttachedImages] = useState<Array<{ url: string; name: string }>>([])
   const [isDragging, setIsDragging] = useState(false)
+  const [showModelMenu, setShowModelMenu] = useState(false)
+  const [showModeMenu, setShowModeMenu] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+  const modelButtonRef = useRef<HTMLButtonElement>(null)
+  const modeMenuRef = useRef<HTMLDivElement>(null)
+  const modeButtonRef = useRef<HTMLButtonElement>(null)
   const pushEvent = useSession((s) => s.pushEvent)
-  // Only enable reacting to stream events after an explicit send
-  const streamEnabledRef = useRef<boolean>(false)
   const setShowTerminal = useSession((s) => s.setShowTerminal)
-  const showTerminal = useSession((s) => s.showTerminal)
-  const [showStats, setShowStats] = useState(false)
-  const [showAgentPicker, setShowAgentPicker] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [recentlyUsed, setRecentlyUsed] = useState<AgentType[]>([])
-  const pickerBtnRef = useRef<HTMLButtonElement>(null)
-  const searchInputRef = useRef<HTMLInputElement>(null)
-  const optionRefs = useRef<HTMLButtonElement[]>([])
-  const optionsRef = useRef<typeof agents[number][]>([])
-  const [activeOption, setActiveOption] = useState(-1)
-  const [pickerPos, setPickerPos] = useState<{ left: number; top: number; width: number } | null>(null)
+  const streamEnabledRef = useRef<boolean>(false)
+  const autoAccept = useSession((s) => s.autoAccept)
+  const setAutoAccept = useSession((s) => s.setAutoAccept)
+  const contextUsage = useSession((s) => s.contextUsage)
   const messages = useSession((s) => s.messages)
   const isStreaming = useSession((s) => s.isStreaming)
   const setStreaming = useSession((s) => s.setStreaming)
   const projectDir = useSession((s) => s.projectDir)
-  // Track which model is currently answering and whether usage was recorded for this turn
-  const [activeModel, setActiveModel] = useState<AgentType | null>(null)
-  const [, setUsageCounted] = useState(false)
-  // Autopilot orchestration removed in first ship; refs unused
   const appSettings = useSettings((s) => s.settings)
 
-  // Auto-resize textarea removed for Monaco editor
+  const loadStoredModel = () => {
+    const fallback = CODEX_MODELS.find((m) => m.id === DEFAULT_MODEL_ID)?.id ?? CODEX_MODELS[0].id
+    if (typeof window === 'undefined') return fallback
+    try {
+      const stored = localStorage.getItem('codex:selected-model')
+      if (stored && CODEX_MODELS.some((m) => m.id === stored)) {
+        return stored
+      }
+    } catch {}
+    return fallback
+  }
 
-  // Recalculate picker position when open/resize/scroll
-  useEffect(() => {
-    if (!showAgentPicker) return
-    const calc = () => {
-      const btn = pickerBtnRef.current
-      if (!btn) return
-      const r = btn.getBoundingClientRect()
-      setPickerPos({ left: r.left, top: r.top, width: r.width })
+  const [selectedModel, setSelectedModel] = useState<string>(loadStoredModel)
+
+  const loadStoredMode = () => {
+    if (typeof window === 'undefined') {
+      return (
+        MODE_OPTIONS.find((opt) => opt.autoAccept === autoAccept)?.id ?? DEFAULT_MODE_ID
+      )
     }
-    calc()
-    window.addEventListener('resize', calc)
-    window.addEventListener('scroll', calc, true)
-    return () => {
-      window.removeEventListener('resize', calc)
-      window.removeEventListener('scroll', calc, true)
+    try {
+      const stored = localStorage.getItem('codex:selected-mode') as ModeOptionId | null
+      if (stored && MODE_OPTIONS.some((opt) => opt.id === stored)) {
+        return stored
+      }
+    } catch {}
+    return MODE_OPTIONS.find((opt) => opt.autoAccept === autoAccept)?.id ?? DEFAULT_MODE_ID
+  }
+
+  const [selectedMode, setSelectedMode] = useState<ModeOptionId>(loadStoredMode)
+
+  const contextInfo = useMemo(() => {
+    if (!contextUsage) return undefined
+    const remainingPct = contextUsage.remainingPct ?? (contextUsage.usedPct != null ? 100 - contextUsage.usedPct : undefined)
+    const usedPct = contextUsage.usedPct ?? (remainingPct != null ? 100 - remainingPct : undefined)
+    const clamp = (value: number) => Math.min(100, Math.max(0, value))
+    const percentUsed = usedPct != null ? clamp(usedPct) : undefined
+    const percentLeft = remainingPct != null ? clamp(remainingPct) : undefined
+    const radius = 9
+    const circumference = 2 * Math.PI * radius
+    const dashOffset = percentUsed != null ? circumference * (1 - percentUsed / 100) : undefined
+    return {
+      percentUsed,
+      percentLeft,
+      remainingTokens: contextUsage.remainingTokens,
+      effectiveTokens: contextUsage.effective,
+      window: contextUsage.window,
+      tokenUsage: contextUsage.tokenUsage,
+      circumference,
+      radius,
+      dashOffset,
     }
-  }, [showAgentPicker])
+  }, [contextUsage])
 
-  // Close picker on outside click
+  const formatTokens = (value?: number) => {
+    if (value === undefined || value === null) return ''
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
+    if (value >= 10_000) return `${Math.round(value / 1_000)}k`
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+    return String(Math.round(value))
+  }
+
+// -- helpers ----------------------------------------------------------------
+  const adjustTextareaHeight = () => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const next = Math.min(200, Math.max(36, el.scrollHeight))
+    el.style.height = `${next}px`
+  }
+
   useEffect(() => {
-    if (!showAgentPicker) return
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (pickerBtnRef.current && pickerBtnRef.current.contains(target)) return
-      const menu = document.getElementById('agent-picker-portal')
-      if (menu && menu.contains(target)) return
-      setShowAgentPicker(false)
+    adjustTextareaHeight()
+  }, [input])
+
+  useEffect(() => {
+    try { localStorage.setItem('codex:selected-model', selectedModel) } catch {}
+  }, [selectedModel])
+
+  useEffect(() => {
+    if (!showModelMenu) return
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (modelMenuRef.current?.contains(target) || modelButtonRef.current?.contains(target)) {
+        return
+      }
+      setShowModelMenu(false)
     }
-    window.addEventListener('mousedown', onDown)
-    return () => window.removeEventListener('mousedown', onDown)
-  }, [showAgentPicker])
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showModelMenu])
 
-  // Manage focus within agent picker
   useEffect(() => {
-    if (showAgentPicker) {
-      setActiveOption(-1)
-      setTimeout(() => searchInputRef.current?.focus(), 0)
+    if (!showModeMenu) return
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (modeMenuRef.current?.contains(target) || modeButtonRef.current?.contains(target)) {
+        return
+      }
+      setShowModeMenu(false)
     }
-  }, [showAgentPicker])
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showModeMenu])
 
   useEffect(() => {
-    setActiveOption(-1)
-  }, [searchQuery])
-
-  const q = searchQuery.trim().toLowerCase()
-  const matches = (a: typeof agents[number]) =>
-    !q || a.id.includes(q) || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
-  const filteredAll = agents.filter(matches)
-  const filteredRecent = recentlyUsed
-    .map(id => agents.find(a => a.id === id)!)
-    .filter(a => !!a && matches(a))
-  const rest = filteredAll.filter(a => !filteredRecent.some(r => r.id === a.id))
-  optionsRef.current = [...filteredRecent, ...rest]
-  optionRefs.current = []
-  const activeId = activeOption >= 0 && optionsRef.current[activeOption]
-    ? `agent-option-${optionsRef.current[activeOption].id}`
-    : undefined
-
-  const renderOption = (agent: typeof agents[number], index: number) => (
-    <button
-      key={agent.id}
-      id={`agent-option-${agent.id}`}
-      role="option"
-      tabIndex={-1}
-      aria-selected={activeOption === index}
-      ref={el => (optionRefs.current[index] = el)}
-      className="agent-option"
-      onClick={() => chooseAgentFromPicker(agent.id as AgentType)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        width: '100%',
-        padding: '8px 10px',
-        borderRadius: 6,
-        background: selectedAgent === agent.id ? 'var(--bg-tertiary)' : 'transparent',
-        border: 'none',
-        cursor: 'pointer',
-        color: 'var(--fg-primary)'
-      }}
-    >
-      {React.createElement(agent.icon, { size: 18, style: { color: agent.color } })}
-      <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>@{agent.id}</div>
-        <div style={{ fontSize: 12, color: 'var(--fg-secondary)' }}>{agent.description}</div>
-      </div>
-    </button>
-  )
+    const option = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
+    try { localStorage.setItem('codex:selected-mode', option.id) } catch {}
+    setAutoAccept(option.autoAccept)
+  }, [selectedMode, setAutoAccept])
 
   // Handle image paste on the textarea
-  const handlePaste = async (e: React.ClipboardEvent) => {
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
 
+    let handled = false
     for (const item of Array.from(items)) {
       if (item.type.startsWith('image/')) {
-        e.preventDefault()
+        handled = true
         const file = item.getAsFile()
         if (file) {
           const reader = new FileReader()
           reader.onload = (event) => {
             const dataUrl = event.target?.result as string
-            setAttachedImages(prev => [...prev, { 
-              url: dataUrl, 
-              name: `image-${Date.now()}.${file.type.split('/')[1]}` 
+            setAttachedImages(prev => [...prev, {
+              url: dataUrl,
+              name: `image-${Date.now()}.${file.type.split('/')[1]}`
             }])
           }
           reader.readAsDataURL(file)
         }
       }
     }
+    if (handled) e.preventDefault()
   }
 
   // Handle drag and drop
@@ -210,7 +305,7 @@ export function Composer() {
     e.preventDefault()
     e.stopPropagation()
     setIsDragging(false)
-    
+
     const files = Array.from(e.dataTransfer.files)
     files.forEach(file => {
       if (file.type.startsWith('image/')) {
@@ -224,186 +319,98 @@ export function Composer() {
     })
   }
 
-  // Listen for model stream events (claude, gemini, qwen) – only set up once on mount
+  // Listen for Codex stream events once on mount
   useEffect(() => {
     let mounted = true
-    const models = ['claude', 'gemini', 'qwen', 'codex'] as const
-    const unlistenFns: Array<() => void> = []
+    const unlisten: Array<() => void> = []
 
-    const handleStreamPayload = (event: any, model: AgentType) => {
-      try {
-        const payload = event?.payload
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] stream raw:', payload) } catch {}
-        }
-        const events = Array.isArray(payload) ? payload : [payload]
-        if (import.meta.env.DEV) {
-          try {
-            console.debug(`[Composer] parsed ${events.length} events:`, events.map((e: any) => e.type))
-            if (events.length === 0) {
-              console.warn('[Composer] parse yielded 0 events for payload:', payload)
-            }
-          } catch {}
-        }
-        for (const ev of events) {
-          // Tag events with their source model so tool tiles can indicate which agent ran them
-          if ((ev as any) && typeof (ev as any) === 'object') {
-            (ev as any).agent = model
+    const handleStreamPayload = (event: { payload: unknown }) => {
+      if (!mounted) return
+      const raw = event?.payload
+      const events = Array.isArray(raw) ? raw : [raw]
+      events.forEach((ev) => {
+        const data = ev as SessionEvent
+        if (!data) return
+        if (data.type === 'assistant:delta') {
+          if (!isStreaming) {
+            setStreaming(true)
           }
-          if (ev.type === 'assistant:delta') {
-            if (mounted && !isStreaming) {
-              // Set streaming with the active model if we haven't already
-              setStreaming(true, activeModel || undefined)
-            }
-            pushEvent(ev as any)
-          } else if (ev.type === 'assistant:complete') {
-            if (mounted) {
-              setStreaming(false)
-              streamEnabledRef.current = false
-              setActiveModel(null)
-              setUsageCounted(false)
-            }
-            pushEvent(ev as any)
-          } else if (ev.type === 'message' && (ev as any).role === 'assistant') {
-            if (mounted) {
-              setStreaming(false)
-              streamEnabledRef.current = false
-              setActiveModel(null)
-              setUsageCounted(false)
-            }
-            pushEvent(ev as any)
-          } else if (ev.type === 'cost:update') {
-            pushEvent(ev as any)
-          } else {
-            pushEvent(ev as any)
-          }
+          pushEvent(data)
+        } else if (data.type === 'assistant:complete') {
+          setStreaming(false)
+          streamEnabledRef.current = false
+          pushEvent(data)
+        } else {
+          pushEvent(data)
         }
-      } catch (err) {
-        console.error('Error handling stream event:', err)
-      }
+      })
     }
 
-    // Do not toggle streaming off on stderr lines — many CLIs (Qwen/Gemini)
-    // emit benign logs on stderr. We'll rely on assistant:complete or process
-    // termination to end the loader. Keep this listener only to avoid leaking.
     const handleError = (ev?: any) => {
       try {
         const raw = (ev && (ev.payload ?? ev)) || ''
         const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
         if (text && /error|invalid|missing|unauthorized|forbidden|denied|timed out|timeout/i.test(text)) {
-          // Surface as assistant message so user sees why model stalled
           pushEvent({ id: String(Date.now()), type: 'message', role: 'assistant', text: `⚠️ ${text}`, ts: Date.now() } as any)
           setStreaming(false)
         }
       } catch {}
     }
 
-    models.forEach((model) => {
-      // Stream listeners (pass model to handler)
-      tauriListen(`${model}:stream`, (e: any) => handleStreamPayload(e, model as any)).then((u: any) => {
-        if (mounted) unlistenFns.push(u)
-      })
-      // Error listeners
-      tauriListen(`${model}:error`, handleError).then((u: any) => {
-        if (mounted) unlistenFns.push(u)
-      })
+    tauriListen('codex:stream', handleStreamPayload).then((fn) => {
+      if (mounted) unlisten.push(fn)
+    })
+    tauriListen('codex:error', handleError).then((fn) => {
+      if (mounted) unlisten.push(fn)
     })
 
     return () => {
       mounted = false
-      unlistenFns.forEach((fn) => fn && fn())
+      unlisten.forEach((fn) => fn && fn())
     }
-  }, []) // Empty dependency array – only run once on mount
+  }, [isStreaming, pushEvent, setStreaming])
+
+  const handleInputChange = (value: string) => {
+    setInput(value)
+    adjustTextareaHeight()
+    const inProgressMention = /@([a-z]*)$/i.test(value)
+    if (inProgressMention) {
+      setShowAgents(true)
+    } else if (!value.includes('@') || value.match(/@codex\s/i)) {
+      setShowAgents(false)
+    }
+  }
+
+  const handleAddContext = () => {
+    const needsSpace = input.length > 0 && !input.endsWith(' ') && !input.endsWith('@')
+    const needsAt = !input.endsWith('@')
+    const nextValue = `${input}${needsSpace ? ' ' : ''}${needsAt ? '@' : ''}`
+    handleInputChange(nextValue)
+    setShowAgents(true)
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
+  const toggleModelMenu = () => {
+    setShowModelMenu((prev) => {
+      const next = !prev
+      if (next) setShowModeMenu(false)
+      return next
+    })
+  }
+
+  const toggleModeMenu = () => {
+    setShowModeMenu((prev) => {
+      const next = !prev
+      if (next) setShowModelMenu(false)
+      return next
+    })
+  }
 
   const handleSend = async () => {
-    const text = input.trim()
-    if ((!text && attachedImages.length === 0) || isStreaming) return
-    
-    // Unified handling for /compress command
-    if (text === '/compress') {
-      try {
-        const { model: chosenModel, reason } = router.selectModelWithReason(text, selectedAgent as any)
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] /compress routing -> model:', chosenModel, 'reason:', reason) } catch {}
-        }
-        // Push a user message with routing badge fields
-        pushEvent({
-          id: String(Date.now()),
-          type: 'message',
-          role: 'user',
-          text: '/compress',
-          content: [{ type: 'text', text: '/compress' }],
-          ts: Date.now(),
-          model: chosenModel,
-          routingReason: reason
-        } as any)
-        setStreaming(true, chosenModel as any)
-        // Track active model for this turn; reset usage flag
-        setActiveModel(chosenModel as AgentType)
-        setUsageCounted(false)
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] invoking send_to_model for /compress with model:', chosenModel) } catch {}
-        }
-        await tauriInvoke('send_to_model', {
-          input: '/compress',
-          model: chosenModel.toLowerCase()
-        })
-      } catch (err) {
-        // Fallback to Claude
-        if (import.meta.env.DEV) {
-          try { console.warn('[Composer] /compress route failed, falling back to Claude. Error:', err) } catch {}
-        }
-        try {
-          setStreaming(true, 'claude')
-          streamEnabledRef.current = true
-          await tauriInvoke('send_to_model', { input: '/compress', model: 'claude' })
-        } catch (_e) {
-          // ignore
-        } finally {
-          setStreaming(false)
-          streamEnabledRef.current = false
-        }
-      }
-      setInput('')
-      return
-    }
+    const rawText = input.trim()
+    if ((!rawText && attachedImages.length === 0) || isStreaming) return
 
-    // Special handling for /clear command
-    if (text === '/clear') {
-      // Send /clear directly to Claude to reset conversation
-      try {
-        setStreaming(true, 'claude')
-        streamEnabledRef.current = true
-        await tauriInvoke('send_to_model', { 
-          input: '/clear', 
-          model: 'claude' 
-        })
-        // Clear UI state after sending /clear
-        const sessionStore = useSession.getState()
-        sessionStore.clearConversation()
-        setInput('')
-        return
-      } catch (err) {
-        console.error('Failed to send /clear command:', err)
-      } finally {
-        setStreaming(false)
-        streamEnabledRef.current = false
-      }
-    }
-    
-    // Check for @agent mentions and extract agent
-    let agent = selectedAgent
-    let cleanText = text
-    // Accept optional punctuation like ".", ":", ",", "-" after the model, then any spaces
-    // Examples: "@qwen hello", "@qwen. hello", "@gemini: do x", "@codex- run"
-    const mentionMatch = text.match(/^@(claude|gemini|qwen|codex)(?=[\s:.,-]|$)[\s:.,-]*/i)
-    const mentionForced = !!mentionMatch
-    if (mentionMatch) {
-      agent = mentionMatch[1].toLowerCase() as AgentType
-      cleanText = text.slice(mentionMatch[0].length)
-    }
-    
-    // Build content array with text and images
+    const cleanText = rawText.replace(/^@codex(?=[\s:.,-]|$)[\s:.,-]*/i, '').trim()
     const content: any[] = []
     if (cleanText) {
       content.push({ type: 'text', text: cleanText })
@@ -412,24 +419,26 @@ export function Composer() {
       content.push({ type: 'image', url: img.url, name: img.name })
     })
 
-    // We'll push the user message after routing is determined so we can attach a routing badge
     setInput('')
     setAttachedImages([])
-    // Start streaming without locking in a model yet; we will set the
-    // exact streaming model after routing decides below.
-    setStreaming(true)
-    // Show the top progress bar immediately while we route/prepare
-    streamEnabledRef.current = true
-    // Optimistically reflect the chosen agent (toolbar or @mention) in the UI glow/bar color
-    // This will be corrected below if the router selects a different model
-    if (agent) {
-      setActiveModel(agent as AgentType)
-    }
     setShowAgents(false)
-    
-    // Checkpointing disabled for first ship
-    
-    // Save images to temp files and get paths
+    setShowModelMenu(false)
+    // no-op; popover closes
+
+    const userEvent = {
+      id: String(Date.now()),
+      type: 'message',
+      role: 'user',
+      text: cleanText || '[Image]',
+      content,
+      ts: Date.now(),
+      model: currentModel.slug
+    } as any
+    pushEvent(userEvent)
+
+    streamEnabledRef.current = true
+    setStreaming(true, currentModel.slug)
+
     const imagePaths: string[] = []
     for (const img of attachedImages) {
       try {
@@ -442,16 +451,12 @@ export function Composer() {
         console.error('Failed to save image:', err)
       }
     }
-    
-    // Prepare message with image paths for Claude CLI
+
     let messageText = cleanText
     if (imagePaths.length > 0) {
-      // Claude CLI expects image paths to be passed as arguments
-      // Format: "message text" /path/to/image1 /path/to/image2
-      messageText = `${cleanText} ${imagePaths.join(' ')}`
+      messageText = `${cleanText} ${imagePaths.join(' ')}`.trim()
     }
 
-    // Load optional project memory from common files (best-effort, non-blocking if fails)
     let memoryText = ''
     if (projectDir) {
       const candidates = [
@@ -462,16 +467,14 @@ export function Composer() {
       ]
       for (const p of candidates) {
         try {
-          // eslint-disable-next-line no-await-in-loop
           const txt = await readTextFile(p)
           if (txt && txt.trim().length > 0) { memoryText = txt; break }
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
       }
     }
 
-    // Build composed prompt with memory + short recent history for cross-model context
     const buildComposedPrompt = (recentMessages: typeof messages, userText: string, memory?: string) => {
-      const MAX_TURNS = 10 // ~last 10 message events
+      const MAX_TURNS = 10
       const history = recentMessages
         .slice(-MAX_TURNS)
         .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
@@ -479,536 +482,311 @@ export function Composer() {
       const sections: string[] = [
         'System: You are an AI coding assistant. Continue the conversation based on the context below. Keep responses concise unless asked otherwise.'
       ]
-      // Autopilot mode removed
       if (memory && memory.trim().length > 0) {
         sections.push('--- Project Memory ---')
         sections.push(memory.trim())
       }
       sections.push('--- Conversation (recent) ---')
       sections.push(history || '[No prior messages]')
-      const composed = `${sections.join('\n')}\n\nUser: ${userText}\nAssistant:`
-      return composed
+      const header = sections.join('\n')
+      return `${header}\n\nUser: ${userText}\nAssistant:`
     }
 
     const composedPrompt = buildComposedPrompt(messages, messageText, memoryText)
+    const payload: any = {
+      currentMessage: composedPrompt,
+      images: imagePaths,
+      model: currentModel.slug,
+      approvalPolicy: currentMode.approvalPolicy,
+      sandboxMode: currentMode.sandboxMode
+    }
+    if (currentModel.effort) {
+      payload.effort = currentModel.effort
+    }
+    const codexCfg = appSettings?.agents?.codex || {}
+    payload.codexOptions = {
+      displayMode: (codexCfg as any).displayMode || 'clean',
+      showReasoning: (codexCfg as any).showReasoning !== false
+    }
 
-    // Send only the current message - Claude -c flag maintains history
     try {
-      // If the user explicitly typed an @mention, force that model without router checks
-      if (mentionForced) {
-        const chosenModel = agent
-        const reason = `User-forced @${agent}`
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] forcing model via @mention ->', chosenModel, 'reason:', reason) } catch {}
-        }
-        const userEvent = {
-          id: String(Date.now()),
-          type: 'message',
-          role: 'user',
-          text: cleanText || '[Image]',
-          content: content,
-          ts: Date.now(),
-          model: chosenModel,
-          routingReason: reason
-        } as any
-        pushEvent(userEvent)
-        setStreaming(true, chosenModel as any)
-        setActiveModel(chosenModel as AgentType)
-        setUsageCounted(false)
-        streamEnabledRef.current = true
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] invoking send_to_model with model:', chosenModel, 'len(input):', messageText.length) } catch {}
-        }
-        {
-          const payload: any = { currentMessage: composedPrompt }
-          if (chosenModel === 'codex') {
-            const codexCfg = appSettings?.agents?.codex || {}
-            payload.codexOptions = {
-              displayMode: (codexCfg as any).displayMode || 'clean',
-              showReasoning: (codexCfg as any).showReasoning !== false
-            }
-          }
-          await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel.toLowerCase() })
-        }
-        return
-      }
-
-      // If no @mention, force the toolbar-selected agent directly
-      if (agent) {
-        const chosenModel = agent
-        const reason = `User-selected model: ${agent}`
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] forcing model via selector ->', chosenModel, 'reason:', reason) } catch {}
-        }
-        const userEvent = {
-          id: String(Date.now()),
-          type: 'message',
-          role: 'user',
-          text: cleanText || '[Image]',
-          content: content,
-          ts: Date.now(),
-          model: chosenModel,
-          routingReason: reason
-        } as any
-        pushEvent(userEvent)
-        setStreaming(true, chosenModel as any)
-        setActiveModel(chosenModel as AgentType)
-        setUsageCounted(false)
-        streamEnabledRef.current = true
-        if (import.meta.env.DEV) {
-          try { console.debug('[Composer] invoking send_to_model with model (selector):', chosenModel, 'len(input):', messageText.length) } catch {}
-        }
-        await tauriInvoke('send_to_model', {
-          input: JSON.stringify({ currentMessage: composedPrompt }),
-          model: chosenModel.toLowerCase()
-        })
-        return
-      }
-
-      // If Autopilot, proactively run a helpful subagent before Claude synthesizes
-      if (agent === 'autopilot') {
-        try {
-          const text = (cleanText || '').toLowerCase()
-          let subModel: any = null
-          if (/(read|scan|summariz(e|e this)|sweep|overview)/.test(text) || /codebase|repo|files/.test(text)) subModel = 'gemini'
-          else if (/(refactor|rename|bulk|migrate|apply patch|create tests|run (commands|script))/.test(text)) subModel = 'qwen'
-          else if (/(plan|architecture|trade[-\s]?offs|deep (analysis|reason))/.test(text)) subModel = 'codex'
-          if (subModel) {
-            const subPayload: any = { currentMessage: cleanText || messageText }
-            if (subModel === 'codex') {
-              try {
-                const settings = (window as any).useSettings?.getState?.().settings || {}
-                const codexCfg = settings?.agents?.codex || {}
-                subPayload.codexOptions = {
-                  displayMode: codexCfg.displayMode || 'clean',
-                  showReasoning: codexCfg.showReasoning !== false
-                }
-              } catch {}
-            }
-            tauriInvoke('send_to_model', { input: JSON.stringify(subPayload), model: subModel.toLowerCase() })
-          }
-        } catch {}
-      }
-
-      // Otherwise, let the router pick the model respecting enabled/auth flags, quotas, and reserves
-      const { model: chosenModel, reason } = router.selectModelWithReason(messageText, undefined)
-      if (import.meta.env.DEV) {
-        try { console.debug('[Composer] routing -> model:', chosenModel, 'reason:', reason, 'agent requested:', agent) } catch {}
-      }
-      // Now add user message with routing badge fields (mark as Autopilot when selected)
-      const userEvent = { 
-        id: String(Date.now()), 
-        type: 'message', 
-        role: 'user', 
-        text: cleanText || '[Image]',
-        content: content,
-        ts: Date.now(),
-        model: chosenModel,
-        routingReason: reason
-      } as any
-      pushEvent(userEvent)
-      // Now that routing finalized the model, record it for streaming so
-      // assistant messages get the correct badge and routing attribution.
-      setStreaming(true, chosenModel as any)
-      // Track active model for this turn; reset usage flag
-      setActiveModel(chosenModel as AgentType)
-      setUsageCounted(false)
-      // Set streaming state so loader appears immediately
-      setStreaming(true, chosenModel as any)
-      // Enable stream handling for this turn and send to backend
-      streamEnabledRef.current = true
-      if (import.meta.env.DEV) {
-        try { console.debug('[Composer] invoking send_to_model with model:', chosenModel, 'len(input):', messageText.length) } catch {}
-      }
-      {
-        const payload: any = { currentMessage: composedPrompt }
-        if (chosenModel === 'codex') {
-          const codexCfg = appSettings?.agents?.codex || {}
-          payload.codexOptions = {
-            displayMode: (codexCfg as any).displayMode || 'clean',
-            showReasoning: (codexCfg as any).showReasoning !== false
-          }
-        }
-        await tauriInvoke('send_to_model', { input: JSON.stringify(payload), model: chosenModel.toLowerCase() })
-      }
+      await tauriInvoke('send_to_codex', { input: JSON.stringify(payload) })
     } catch (err) {
-      // Fallback to Claude if non-Claude route failed
-      if (selectedAgent !== 'claude') {
-        if (import.meta.env.DEV) {
-          try { console.warn('[Composer] primary route failed, falling back to Claude. Error:', err) } catch {}
-        }
-        try {
-          // Update streaming to show Claude is now processing
-          setStreaming(true, 'claude')
-          await tauriInvoke('send_to_model', { 
-            input: JSON.stringify({ 
-              currentMessage: buildComposedPrompt(messages, messageText)
-            }), 
-            model: 'claude' 
-          })
-        } catch (_fallbackErr) {
-          if (import.meta.env.DEV) {
-            try { console.error('[Composer] Claude fallback also failed:', _fallbackErr) } catch {}
-          }
-          setStreaming(false)
-        }
-      } else {
-        setStreaming(false)
-      }
+      console.error('Failed to invoke Codex:', err)
+      setStreaming(false)
+      streamEnabledRef.current = false
     }
   }
 
   const handleStop = async () => {
     try {
-      // Prefer stopping the active streaming model if known
-      const state = useSession.getState()
-      const model = (state.streamingModel as any) || (activeModel as any) || 'claude'
-      if (model) {
-        await tauriInvoke('stop_model', { model: String(model).toLowerCase() })
-      } else {
-        await tauriInvoke('stop_claude')
-      }
+      await tauriInvoke('interrupt_codex')
+    } catch (err) {
+      console.error('Failed to interrupt Codex:', err)
+    } finally {
       setStreaming(false)
       streamEnabledRef.current = false
-      // Clear any stuck streaming state in the session
-      const sessionStore = useSession.getState()
-      sessionStore.setStreaming(false)
-    } catch (_err) {
-      // Even if stop fails, clear the UI state
-      setStreaming(false)
-      streamEnabledRef.current = false
-      const sessionStore = useSession.getState()
-      sessionStore.setStreaming(false)
+      useSession.getState().setStreaming(false)
     }
   }
 
-  const handleKeyDown = (e: monaco.IKeyboardEvent) => {
-    if (e.keyCode === monaco.KeyCode.Enter && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
-  
-  const handleInputChange = (value: string) => {
-    setInput(value)
-    const inProgressMention = /@([a-z]*)$/i.test(value)
-    if (inProgressMention) {
-      setShowAgents(true)
-    } else if (!value.includes('@') || value.match(/@(claude|gemini|qwen|codex)\s/i)) {
-      setShowAgents(false)
-    }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    handleSend()
   }
 
-  const selectAgent = (agentId: AgentType) => {
-    setSelectedAgent(agentId)
-    setShowAgents(false)
-    setInput(`@${agentId} `)
-  }
+  const currentModel = CODEX_MODELS.find((m) => m.id === selectedModel) ?? CODEX_MODELS[0]
+  const currentMode = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
 
-  // Picker in toolbar: only set default agent; do not modify input
-  const chooseAgentFromPicker = (agentId: AgentType) => {
-    setSelectedAgent(agentId)
-    setRecentlyUsed((prev) => {
-      const next = [agentId, ...prev.filter((id) => id !== agentId)]
-      return next.slice(0, 5)
-    })
-    setShowAgentPicker(false)
-    setSearchQuery('')
-    setActiveOption(-1)
-    setTimeout(() => pickerBtnRef.current?.focus(), 0)
-  }
-
-  const handlePickerKeyDown = (e: React.KeyboardEvent) => {
-    const opts = optionsRef.current
-    if (e.key === 'ArrowDown') {
-      if (opts.length === 0) return
-      e.preventDefault()
-      const next = (activeOption + 1) % opts.length
-      setActiveOption(next)
-      optionRefs.current[next]?.focus()
-    } else if (e.key === 'ArrowUp') {
-      if (opts.length === 0) return
-      e.preventDefault()
-      const prev = (activeOption - 1 + opts.length) % opts.length
-      setActiveOption(prev)
-      optionRefs.current[prev]?.focus()
-    } else if (e.key === 'Enter') {
-      if (activeOption >= 0 && opts[activeOption]) {
-        e.preventDefault()
-        chooseAgentFromPicker(opts[activeOption].id as AgentType)
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      setShowAgentPicker(false)
-      setSearchQuery('')
-      setActiveOption(-1)
-      setTimeout(() => pickerBtnRef.current?.focus(), 0)
-    }
-  }
-
-  const currentAgent = agents.find(a => a.id === selectedAgent)!
-
-  // Error boundary to avoid whole-app crash from modal
-  class ModalErrorBoundary extends React.Component<{ onRecover: () => void; children: React.ReactNode }, { hasError: boolean; message?: string }> {
-    constructor(props: any) {
-      super(props)
-      this.state = { hasError: false, message: undefined }
-    }
-    static getDerivedStateFromError(error: any) {
-      return { hasError: true, message: error?.message || 'Modal error' }
-    }
-    componentDidCatch(error: any, info: any) {
-      try { console.error('[UsageStatsModal] crashed:', error, info) } catch {}
-    }
-    render() {
-      if (this.state.hasError) {
-        return (
-          <div role="dialog" aria-modal="true" onClick={this.props.onRecover} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999 }}>
-            <div onClick={(e) => e.stopPropagation()} style={{ width: 420, maxWidth: '92vw', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 12, boxShadow: '0 10px 30px rgba(0,0,0,0.25)', padding: 16 }}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>Usage stats</div>
-              <div style={{ fontSize: 13, color: 'var(--fg-secondary)' }}>Failed to render usage stats modal.</div>
-              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="settings-btn primary" style={{ height: 32 }} onClick={this.props.onRecover}>Close</button>
-              </div>
-            </div>
-          </div>
-        )
-      }
-      return this.props.children as any
-    }
-  }
-
-return (
-<div className="composer">
-  {/* Per-model streaming animations */}
-  <style>{`
-    @keyframes subtle-glow { 0%{box-shadow: 0 0 0 rgba(0,0,0,0)} 50%{box-shadow: 0 0 24px var(--glow-color)} 100%{box-shadow: 0 0 0 rgba(0,0,0,0)} }
-    .composer-box.model-claude { --glow-color: rgba(8,145,178,0.25); animation: subtle-glow 2.4s ease-in-out infinite }
-    .composer-box.model-gemini { --glow-color: rgba(139,92,246,0.25); animation: subtle-glow 2.4s ease-in-out infinite }
-    .composer-box.model-qwen { --glow-color: rgba(245,158,11,0.25); animation: subtle-glow 2.4s ease-in-out infinite }
-    .composer-box.model-codex { --glow-color: rgba(16,185,129,0.25); animation: subtle-glow 2.4s ease-in-out infinite }
-  `}</style>
-  <div className="composer-container">
-    <div 
-      className={`composer-box ${isFocused ? 'focused' : ''} ${input ? 'has-content' : ''} ${isDragging ? 'dragging' : ''} model-${(activeModel || selectedAgent)}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      {showAgents && (
-        <div className="agent-menu">
-          {agents.map(agent => {
-            const Icon = agent.icon
-            return (
-              <button
-                key={agent.id}
-                className="agent-option"
-                onClick={() => selectAgent(agent.id as AgentType)}
-                onMouseDown={(e) => e.preventDefault()} // Prevent blur
-              >
-                <Icon size={20} style={{ color: agent.color }} />
-                <div className="agent-info">
-                  <div className="agent-name">@{agent.id}</div>
-                  <div className="agent-desc">{agent.description}</div>
-                </div>
+  return (
+    <div className="input-container">
+      <form id="chat-form" className="chat-form" onSubmit={handleSubmit}>
+        <div
+          ref={wrapperRef}
+          className={`input-wrapper ${isFocused ? 'is-focused' : ''} ${isDragging ? 'dragging' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div className="input-header">
+            <div className="header-left">
+              <button type="button" className="add-context-btn" onClick={handleAddContext}>
+                <span>@</span> Add Context
               </button>
-            )
-          })}
-        </div>
-      )}
-      
-      <div className="composer-toolbar">
-        <div className="toolbar-left">
-          <button className="toolbar-btn" title="Attach files">
-            <Paperclip size={18} />
-          </button>
-          <button 
-            className="toolbar-btn" 
-            title="Add image"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Image size={18} />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const files = Array.from(e.target.files || [])
-              files.forEach(file => {
-                const reader = new FileReader()
-                reader.onload = (ev) => {
-                  const dataUrl = ev.target?.result as string
-                  setAttachedImages(prev => [...prev, { url: dataUrl, name: file.name }])
-                }
-                reader.readAsDataURL(file)
-              })
-              e.target.value = ''
-            }}
-          />
-          <button className="toolbar-btn" title="Voice input">
-            <Mic size={18} />
-          </button>
-          <button 
-            className={`toolbar-btn ${showTerminal ? 'active' : ''}`} 
-            title="Toggle terminal (⌘T)"
-            onClick={() => setShowTerminal(!showTerminal)}
-          >
-            <TerminalIcon size={18} />
-          </button>
-          <div className="toolbar-divider" />
-          {/* Agent picker (persistent model selector) */}
-          <div className="agent-picker" style={{ position: 'relative' }}>
-            <button
-              className={`toolbar-btn ${showAgentPicker ? 'active' : ''}`}
-              title="Choose model"
-              ref={pickerBtnRef}
-              onClick={() => { setShowAgentPicker(v => !v); setSearchQuery('') }}
-            >
-              {React.createElement(currentAgent.icon, { size: 18, style: { color: currentAgent.color } })}
-              <span className="toolbar-label" style={{ color: currentAgent.color, fontWeight: 600 }}>{currentAgent.name}</span>
-            </button>
-            {showAgentPicker && pickerPos && createPortal(
-              (
-                <div
-                  id="agent-picker-portal"
-                  style={{
-                    position: 'fixed',
-                    left: Math.round(pickerPos.left),
-                    top: Math.round(pickerPos.top),
-                    transform: 'translateY(-8px) translateY(-100%)',
-                    zIndex: 10000
-                  }}
-                >
-                  <div
-                    className="agent-picker-menu"
-                    style={{
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: 8,
-                      boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-                      padding: 6,
-                      minWidth: Math.max(260, Math.round(pickerPos.width)) ,
-                      maxHeight: 360,
-                      overflowY: 'auto'
-                    }}
-                    onKeyDown={handlePickerKeyDown}
-                  >
-                    {/* Search input */}
-                    <div style={{ padding: 6 }}>
-                      <input
-                        type="text"
-                        value={searchQuery}
-                        ref={searchInputRef}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search models…"
-                        style={{
-                          width: '100%',
-                          height: 30,
-                          borderRadius: 6,
-                          border: '1px solid var(--border-color)',
-                          background: 'var(--bg-tertiary)',
-                          color: 'var(--fg-primary)',
-                          padding: '0 10px',
-                          outline: 'none'
-                        }}
-                        aria-controls="agent-picker-listbox"
-                        aria-activedescendant={activeId}
+              {attachedImages.length > 0 && (
+                <div className="attachment-pills" aria-label="Attached images">
+                  {attachedImages.map((img, idx) => (
+                    <div key={`${img.name}-${idx}`} className="attachment-pill">
+                      <span
+                        className="attachment-thumb"
+                        style={{ backgroundImage: `url(${img.url})` }}
+                        aria-hidden="true"
                       />
+                      <span className="attachment-name" title={img.name}>{img.name}</span>
+                      <button
+                        type="button"
+                        className="attachment-remove"
+                        onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
+                        aria-label={`Remove ${img.name}`}
+                      >
+                        ×
+                      </button>
                     </div>
-                    <div
-                      id="agent-picker-listbox"
-                      role="listbox"
-                      aria-activedescendant={activeId}
-                    >
-                      {filteredRecent.length > 0 && (
-                        <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Recently Used</div>
-                      )}
-                      {filteredRecent.map((a, i) => renderOption(a, i))}
-                      <div style={{ padding: '4px 10px', fontSize: 11, color: 'var(--fg-secondary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>All Models</div>
-                      {rest.map((a, i) => renderOption(a, i + filteredRecent.length))}
-                    </div>
-                  </div>
+                  ))}
                 </div>
-              ),
-              document.body
-            )}
-          </div>
-          <div className="toolbar-divider" />
-          <button className="toolbar-btn" title="Commands">
-            <Command size={18} />
-            <span className="toolbar-label">Commands</span>
-          </button>
-          <button 
-            className={`toolbar-btn ${showStats ? 'active' : ''}`} 
-            title="Usage stats"
-            onClick={() => setShowStats(!showStats)}
-          >
-            <BarChart3 size={18} />
-            <span className="toolbar-label">Stats</span>
-          </button>
-        </div>
-      </div>
-
-      <div className={`composer-input-area ${isDragging ? 'drag-over' : ''}`}>
-        <Editor
-          language="plaintext"
-          value={input}
-          onChange={handleInputChange}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setTimeout(() => setIsFocused(false), 200)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-        />
-        <div className="composer-actions">
-          {isStreaming ? (
-            <button className="action-btn stop" onClick={handleStop}>
-              <StopCircle size={20} />
-              <span>Stop</span>
-            </button>
-          ) : (
-            <button 
-              className="action-btn send" 
-              onClick={handleSend} 
-              disabled={!input.trim() && attachedImages.length === 0}
-            >
-              <ArrowUp size={20} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {attachedImages.length > 0 && (
-        <div className="attached-images">
-          {attachedImages.map((img, idx) => (
-            <div key={idx} className="attached-image">
-              <div className="image-preview">
-                <img src={img.url} alt={img.name} />
-                <button 
-                  className="remove-image"
-                  onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
-                  title="Remove image"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                </button>
-              </div>
-              <span className="image-name">{img.name}</span>
+              )}
             </div>
-          ))}
+          </div>
+
+          {showAgents && (
+            <div className="agent-menu">
+              {agents.map(agent => (
+                <button
+                  key={agent.id}
+                  className="agent-option"
+                  onClick={() => {
+                    setShowAgents(false)
+                    setTimeout(() => textareaRef.current?.focus(), 0)
+                  }}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  <span className="agent-dot" style={{ background: agent.color }} />
+                  <div className="agent-info">
+                    <div className="agent-name">@{agent.id}</div>
+                    <div className="agent-desc">{agent.description}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="input-main">
+            <textarea
+              ref={textareaRef}
+              placeholder="Ask Codex to help with your code, explain concepts, or solve problems..."
+              value={input}
+              onChange={(e) => handleInputChange(e.target.value)}
+              onFocus={() => setIsFocused(true)}
+              onBlur={() => setTimeout(() => setIsFocused(false), 200)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+          </div>
+
+          <div className="input-footer">
+            <div className="footer-left">
+              <div className="model-pill-wrapper">
+                <button
+                  type="button"
+                  className="model-pill"
+                  onClick={toggleModelMenu}
+                  ref={modelButtonRef}
+                  aria-haspopup="listbox"
+                  aria-expanded={showModelMenu}
+                >
+                  <span>{currentModel.label}</span>
+                  <ChevronDown size={14} />
+                </button>
+                {showModelMenu && (
+                  <div className="model-popover" ref={modelMenuRef} role="listbox">
+                    {CODEX_MODELS.map((model) => {
+                      const isActive = model.id === selectedModel
+                      return (
+                        <button
+                          key={model.id}
+                          className={`model-option ${isActive ? 'active' : ''}`}
+                          role="option"
+                          aria-selected={isActive}
+                          onClick={() => {
+                            setSelectedModel(model.id)
+                            setShowModelMenu(false)
+                          }}
+                        >
+                          {model.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="mode-pill-wrapper">
+                <button
+                  type="button"
+                  className="mode-pill"
+                  onClick={toggleModeMenu}
+                  ref={modeButtonRef}
+                  aria-haspopup="listbox"
+                  aria-expanded={showModeMenu}
+                >
+                  <span>{currentMode.label}</span>
+                  <ChevronDown size={14} />
+                </button>
+                {showModeMenu && (
+                  <div className="mode-popover" ref={modeMenuRef} role="listbox">
+                    {MODE_OPTIONS.map((option) => {
+                      const isActive = option.id === selectedMode
+                      return (
+                        <button
+                          key={option.id}
+                          className={`mode-option ${isActive ? 'active' : ''}`}
+                          role="option"
+                          aria-selected={isActive}
+                          onClick={() => {
+                            setSelectedMode(option.id)
+                            setShowModeMenu(false)
+                          }}
+                        >
+                          <span>{option.label}</span>
+                          {isActive && <span className="mode-check">✓</span>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              {contextInfo?.percentLeft !== undefined && contextInfo.dashOffset !== undefined && (
+                <div
+                  className="context-meter"
+                  title={(() => {
+                    const percent = `${Math.round(contextInfo.percentLeft)}% left`
+                    const hasTokens = contextInfo.remainingTokens !== undefined && contextInfo.effectiveTokens !== undefined
+                    const remaining = hasTokens
+                      ? `${formatTokens(contextInfo.remainingTokens)} / ${formatTokens(contextInfo.effectiveTokens)} tokens`
+                      : undefined
+                    return remaining ? `${percent} · ${remaining}` : percent
+                  })()}
+                >
+                  <svg
+                    className="context-ring"
+                    width={contextInfo.radius * 2 + 2}
+                    height={contextInfo.radius * 2 + 2}
+                    viewBox={`0 0 ${contextInfo.radius * 2 + 2} ${contextInfo.radius * 2 + 2}`}
+                  >
+                    <circle
+                      className="context-ring-bg"
+                      cx={contextInfo.radius + 1}
+                      cy={contextInfo.radius + 1}
+                      r={contextInfo.radius}
+                    />
+                    <circle
+                      className="context-ring-progress"
+                      cx={contextInfo.radius + 1}
+                      cy={contextInfo.radius + 1}
+                      r={contextInfo.radius}
+                      strokeDasharray={contextInfo.circumference}
+                      strokeDashoffset={contextInfo.dashOffset}
+                    />
+                  </svg>
+                  <span>{Math.round(contextInfo.percentLeft)}%</span>
+                </div>
+              )}
+            </div>
+
+            <div className="footer-right">
+              <button type="button" className="icon-btn" title="Attach files">
+                <Paperclip size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach image"
+              >
+                <ImageIcon size={16} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || [])
+                  files.forEach(file => {
+                    const reader = new FileReader()
+                    reader.onload = (ev) => {
+                      const dataUrl = ev.target?.result as string
+                      setAttachedImages(prev => [...prev, { url: dataUrl, name: file.name }])
+                    }
+                    reader.readAsDataURL(file)
+                  })
+                  e.target.value = ''
+                }}
+              />
+              <button type="button" className="icon-btn" title="Voice input">
+                <Mic size={16} />
+              </button>
+              <button type="button" className="icon-btn" title="Toggle terminal" onClick={() => setShowTerminal(true)}>
+                <TerminalIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className={`stop-btn ${isStreaming ? '' : 'hidden'}`}
+                onClick={handleStop}
+                disabled={!isStreaming}
+              >
+                <StopCircle size={16} />
+                Stop
+              </button>
+              <button
+                type="submit"
+                className="send-btn"
+                disabled={!input.trim() && attachedImages.length === 0}
+              >
+                <Send size={16} />
+              </button>
+            </div>
+          </div>
         </div>
-      )}
-      {/* Usage stats modal */}
-      {showStats && (
-        <ModalErrorBoundary onRecover={() => setShowStats(false)}>
-          <UsageStatsModal open={showStats} onClose={() => setShowStats(false)} router={router} />
-        </ModalErrorBoundary>
-      )}
+      </form>
+
     </div>
-  </div>
-</div>
-)
+  )
 }

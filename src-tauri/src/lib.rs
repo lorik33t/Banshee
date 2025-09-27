@@ -224,6 +224,32 @@ fn send_to_codex(_app: tauri::AppHandle, input: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn interrupt_codex() -> Result<(), String> {
+    let mut guard = CODEX.lock().unwrap();
+    if let Some(bridge) = guard.as_mut() {
+        bridge.interrupt()
+    } else {
+        Err("Codex bridge not initialized. Please ensure a project is open.".into())
+    }
+}
+
+#[tauri::command]
+fn resolve_codex_permission(request_id: String, allow: bool, scope: String) -> Result<(), String> {
+    let mut bridge_guard = CODEX.lock().unwrap();
+    if let Some(bridge) = bridge_guard.as_mut() {
+        bridge.resolve_permission(&request_id, allow, &scope)
+    } else {
+        Err("Codex bridge not initialized. Please ensure a project is open.".into())
+    }
+}
+
+#[tauri::command]
+fn restart_codex(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
+    stop_codex()?;
+    start_codex(app, project_dir)
+}
+
+#[tauri::command]
 fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<(), String> {
     let model = model.to_lowercase();
     eprintln!("[RUST] send_to_model called with model: {}", model);
@@ -601,6 +627,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_codex,
             send_to_codex,
+            interrupt_codex,
+            resolve_codex_permission,
+            restart_codex,
             send_to_model,
             stop_codex,
             stop_model,

@@ -105,7 +105,7 @@ export class ModelRouter {
     return this.selectModelWithReason(prompt, preferredModel).model
   }
 
-  selectModelWithReason(prompt: string, preferredModel?: ModelType): { model: ModelType; reason: string } {
+  selectModelWithReason(_prompt: string, preferredModel?: ModelType): { model: ModelType; reason: string } {
     this.refreshFlags()
     this.resetQuotasIfNeeded()
 
@@ -129,8 +129,8 @@ export class ModelRouter {
       return { model: 'codex', reason: this.lastReason }
     }
 
-    this.lastReason = 'Codex selected'
-    return { model: 'codex', reason: this.lastReason }
+      this.lastReason = null
+    return { model: 'codex', reason: 'codex' }
   }
 
   recordUsage(model: ModelType) {
@@ -165,4 +165,3 @@ export class ModelRouter {
     }
   }
 }
-

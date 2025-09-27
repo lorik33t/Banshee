@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { readDir, exists, BaseDirectory } from '@tauri-apps/plugin-fs'
-import { ChevronRight, ChevronDown, Folder, FolderOpen, X, GitBranch } from 'lucide-react'
+import { ChevronRight, ChevronDown, Folder, FolderOpen, X, GitBranch, Search } from 'lucide-react'
 import { useSession } from '../state/session'
 import { useWorkspaceStore } from '../state/workspace'
 import { getFileIcon } from '../utils/fileIcons'
@@ -28,9 +28,11 @@ export function FileTree() {
   const [diagnostics, setDiagnostics] = useState<string[]>([])
   const loadAttempts = useRef(0)
   const lastLoadPath = useRef<string | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
   const [gitStatus, setGitStatus] = useState<Map<string, GitFileStatus>>(new Map())
   const [showGitStatus, setShowGitStatus] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchVisible, setSearchVisible] = useState(false)
   
   // Get the active project path from workspace store
   const activeProject = activeProjectId ? getProject(activeProjectId) : null
@@ -43,6 +45,35 @@ export function FileTree() {
     console.log('[FileTree Diagnostic]', diagnostic)
     setDiagnostics(prev => [...prev.slice(-20), diagnostic]) // Keep last 20 diagnostics
   }
+
+  const handleOpenRepo = useCallback(async () => {
+    if (!(window as any).__TAURI__) return
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({ directory: true, multiple: false, title: 'Open Repository' })
+      if (!selected || typeof selected !== 'string') return
+
+      const repoPath = selected as string
+      const projectName = repoPath.split('/').pop() || repoPath
+
+      const workspace = useWorkspaceStore.getState()
+      const existing = workspace.projects.find((p) => p.path === repoPath)
+      if (existing) {
+        workspace.setActiveProject(existing.id)
+      } else {
+        const projectId = workspace.addProject({ name: projectName, path: repoPath })
+        workspace.setActiveProject(projectId)
+      }
+
+      const session = useSession.getState()
+      session.setProjectDir(repoPath)
+      setNodes([])
+      setSearchQuery('')
+      setSearchVisible(false)
+    } catch (err) {
+      console.error('Failed to open repository:', err)
+    }
+  }, [setProjectDir])
 
   // Load directory with comprehensive diagnostics
   async function loadDirectory(basePath: string, relativePath: string = ''): Promise<FileNode[]> {
@@ -196,7 +227,6 @@ export function FileTree() {
       const loadStartTime = performance.now()
       addDiagnostic(`Starting load at ${loadStartTime}ms since page load`)
       
-      // Check Tauri readiness before attempting load
       const checkAndLoad = async () => {
         // Wait for Tauri to be ready
         let tauriCheckAttempts = 0
@@ -258,6 +288,13 @@ export function FileTree() {
     }
   }, [currentProjectPath, showGitStatus])
   
+
+  useEffect(() => {
+    if (searchVisible) {
+      searchInputRef.current?.focus()
+    }
+  }, [searchVisible])
+
   // Refresh git status periodically
   useEffect(() => {
     if (!currentProjectPath || !showGitStatus) return
@@ -307,11 +344,13 @@ export function FileTree() {
   async function closeFolder() {
     try {
       // Stop Claude
-      await invoke('stop_claude').catch(() => {})
+      await invoke('interrupt_codex').catch(() => {})
       
       // Clear the project directory in session
       setProjectDir(undefined)
       setNodes([])
+      setSearchQuery('')
+      setSearchVisible(false)
       
       // Navigate back to welcome screen by reloading
       // This will reset the app state and show the welcome view
@@ -381,7 +420,7 @@ export function FileTree() {
       <Virtuoso
         style={{ height: '100%' }}
         data={flatNodes}
-        itemContent={(index, { node, depth }) => {
+        itemContent={(_index, { node, depth }) => {
           const isDir = node.kind === 'dir'
           const isExpanded = !!node.expanded
           const { icon: FileIcon, color } = isDir
@@ -463,15 +502,28 @@ export function FileTree() {
           <Folder size={16} />
           <span>{currentProjectPath ? currentProjectPath.split('/').pop() : ''}</span>
         </div>
-        <input
-          type="text"
-          placeholder="Search..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="file-tree-search text-input"
-          style={{ flex: 1, marginLeft: '8px' }}
-        />
         <div className="file-tree-actions">
+          <button
+            className="file-tree-button"
+            onClick={handleOpenRepo}
+            title="Open repository"
+          >
+            <FolderOpen size={14} />
+            <span>Open repo</span>
+          </button>
+          <button
+            className={`file-tree-action ${searchVisible ? 'active' : ''}`}
+            onClick={() => {
+              setSearchVisible((prev) => {
+                const next = !prev
+                if (!next) setSearchQuery('')
+                return next
+              })
+            }}
+            title={searchVisible ? 'Hide search' : 'Search files'}
+          >
+            <Search size={16} />
+          </button>
           <button
             className="file-tree-action"
             onClick={() => setShowGitStatus(!showGitStatus)}
@@ -480,8 +532,8 @@ export function FileTree() {
           >
             <GitBranch size={16} />
           </button>
-          <button 
-            className="file-tree-action" 
+          <button
+            className="file-tree-action"
             onClick={closeFolder}
             title="Close folder"
           >
@@ -489,6 +541,28 @@ export function FileTree() {
           </button>
         </div>
       </div>
+      {searchVisible && (
+        <div className="file-tree-search-row">
+          <Search size={14} className="file-tree-search-icon" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            placeholder="Search files..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="file-tree-search-input text-input"
+          />
+          {searchQuery && (
+            <button
+              className="file-tree-search-clear"
+              onClick={() => setSearchQuery('')}
+              title="Clear search"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
       <div className="file-tree-content">
         {loading ? (
           <div className="file-tree-empty">

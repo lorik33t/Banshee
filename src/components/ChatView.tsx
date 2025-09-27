@@ -1,55 +1,49 @@
 import { useEffect, useRef } from 'react'
 import { useSession } from '../state/session'
 import { Message } from './Message'
-import { ToolExecution } from './ToolExecution'
 import { ThinkingOutput } from './ThinkingOutput'
+import { ToolExecution } from './ToolExecution'
 import { TerminalView2 } from './TerminalView2'
 import { StreamingLoader } from './StreamingLoader'
-import type { MessageEvent, ThinkingEvent, SessionEvent } from '../state/session'
+import type { MessageEvent, ThinkingEvent } from '../state/session'
 
-type ConversationItem = 
+type ConversationItem =
   | { type: 'message'; event: MessageEvent }
-  | { type: 'tools'; ids: string[] }
-  | { type: 'thinking'; event: ThinkingEvent }
+  | { type: 'thinking'; event: ThinkingEvent; toolIds: string[] }
+  | { type: 'tool'; event: any; toolIds: string[] }
 
 export function ChatView() {
   const events = useSession((s) => s.events)
+  const messages = useSession((s) => s.messages)
   const tools = useSession((s) => s.tools)
   const showTerminal = useSession((s) => s.showTerminal)
   const setShowTerminal = useSession((s) => s.setShowTerminal)
   const isStreaming = useSession((s) => s.isStreaming)
   const setStreaming = useSession((s) => s.setStreaming)
   const streamingStartTime = useSession((s) => s.streamingStartTime)
-  // const streamingModel = useSession((s) => s.streamingModel)
-  // const cost = useSession((s) => s.cost)
   const scrollRef = useRef<HTMLDivElement>(null)
   
-  // On first mount, ensure streaming is off
   useEffect(() => {
     setStreaming(false)
   }, [setStreaming])
 
   useEffect(() => {
-    // Auto-scroll to bottom
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [events])
   
-  // Handle ESC key to close terminal or cancel operations
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (showTerminal) {
           setShowTerminal(false)
         } else if (isStreaming) {
-          // Cancel streaming operation
           import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke('stop_claude')
+            invoke('interrupt_codex').catch(() => {})
           })
         }
       }
-      // Handle Cmd+T to toggle terminal
       if (e.key === 't' && e.metaKey) {
         e.preventDefault()
         setShowTerminal(!showTerminal)
@@ -60,47 +54,86 @@ export function ChatView() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [showTerminal, setShowTerminal, isStreaming])
 
-  // Sort events chronologically by ts to avoid insertion-order glitches
-  const orderedEvents = [...events].sort(
-    (a: SessionEvent, b: SessionEvent) => (a.ts ?? 0) - (b.ts ?? 0)
-  )
-  
-  // Group messages and other events into conversation items
   const items: ConversationItem[] = []
-  let currentTools: string[] = []
   
-  // Process events in chronological order, maintaining tool/message relationships
-  for (const event of orderedEvents) {
-    if (event.type === 'message') {
-      
-      // Flush any pending tools before the message
-      if (currentTools.length > 0) {
-        items.push({ type: 'tools', ids: currentTools })
-        currentTools = []
-      }
-      items.push({ type: 'message', event })
-    } else if (event.type === 'tool:start') {
-      currentTools.push(event.id)
-    } else if (event.type === 'thinking') {
-      // Flush any pending tools before thinking
-      if (currentTools.length > 0) {
-        items.push({ type: 'tools', ids: currentTools })
-        currentTools = []
-      }
-      items.push({ type: 'thinking', event })
+  const messageMap = new Map<string, MessageEvent>()
+  messages.forEach(msg => {
+    const existing = messageMap.get(msg.id)
+    if (!existing || (msg.ts ?? 0) > (existing.ts ?? 0)) {
+      messageMap.set(msg.id, msg)
+    }
+  })
+  
+  messageMap.forEach(msg => {
+    items.push({ type: 'message', event: msg })
+  })
+
+  const thinkingEvents = events.filter(
+    (event): event is ThinkingEvent => event.type === 'thinking'
+  )
+
+  const reasoningByHeading = new Map<string, ThinkingEvent>()
+
+  for (const event of thinkingEvents) {
+    const currentText = (event.fullText ?? event.text ?? '').trim()
+    if (currentText.length < 20) {
+      continue
+    }
+
+    const headingMatch = currentText.match(/\*\*([^*]+)\*\*/)
+    const heading = headingMatch ? headingMatch[1].trim() : ''
+    if (!heading.length) {
+      continue
+    }
+
+    const words = heading
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+    const baseKey = words.slice(0, 2).join(' ') || heading.toLowerCase()
+    const existing = reasoningByHeading.get(baseKey)
+
+    if (!existing) {
+      reasoningByHeading.set(baseKey, event)
+      continue
+    }
+
+    const existingText = (existing.fullText ?? existing.text ?? '').trim()
+
+    if (event.done && !existing.done) {
+      reasoningByHeading.set(baseKey, event)
+      continue
+    }
+
+    if (currentText.length >= existingText.length) {
+      reasoningByHeading.set(baseKey, event)
     }
   }
+
+  reasoningByHeading.forEach((event) => {
+    items.push({ type: 'thinking', event, toolIds: [] })
+  })
+
+  Object.values(tools).forEach(tool => {
+    if (tool && (tool.output || !tool.done)) {
+      const toolName = (tool.tool || '').toLowerCase()
+      const shouldShowAsCard = toolName === 'task' ||
+                              toolName === 'webfetch' ||
+                              toolName === 'websearch' ||
+                              toolName === 'todowrite'
+
+      if (shouldShowAsCard) {
+        items.push({ type: 'tool', event: tool as any, toolIds: [tool.id] })
+      }
+    }
+  })
   
-  // Flush remaining tools
-  if (currentTools.length > 0) {
-    items.push({ type: 'tools', ids: currentTools })
-  }
+  items.sort((a, b) => (a.event?.ts ?? 0) - (b.event?.ts ?? 0))
 
   if (items.length === 0 && !showTerminal) {
     return (
       <div className="chat-view" ref={scrollRef}>
         <div className="chat-content">
-          {/* Empty state - no welcome message */}
         </div>
       </div>
     )
@@ -108,12 +141,10 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
-      {/* Terminal view - always rendered but hidden when not active */}
       <div style={{ display: showTerminal ? 'block' : 'none', height: '100%' }}>
         <TerminalView2 />
       </div>
       
-      {/* Chat view - hidden when terminal is active */}
       <div 
         ref={scrollRef} 
         style={{ display: showTerminal ? 'none' : 'block', height: '100%' }}
@@ -121,23 +152,21 @@ export function ChatView() {
         <div className="chat-content">
           {items.map((item, i) => {
             if (item.type === 'message') {
-              return <Message key={item.event.id} message={item.event} />
-            } else if (item.type === 'tools') {
-              return (
-                <div key={`tools-${i}`} className="tool-group">
-                  {item.ids.map(id => {
-                    const tool = tools[id]
-                    if (!tool) return null
-                    return <ToolExecution key={id} tool={tool} />
-                  })}
-                </div>
-              )
+              return <Message key={item.event.id} message={item.event} isStreaming={isStreaming} />
             } else if (item.type === 'thinking') {
-              return <ThinkingOutput key={`thinking-${i}`} thinking={item.event} />
+              const toolRuns = item.toolIds
+                .map((id) => tools[id])
+                .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool && tool.output && tool.output.trim().length))
+              const thinkingKey = `thinking-${(item.event as any).id ?? i}`
+              return <ThinkingOutput key={thinkingKey} thinking={item.event} tools={toolRuns} />
+            } else if (item.type === 'tool') {
+              const tool = tools[item.toolIds[0]]
+              if (tool) {
+                return <ToolExecution key={`tool-${tool.id}`} tool={tool} />
+              }
             }
             return null
           })}
-          {/* Always mount loader; internal cooldown manages visibility to prevent flicker */}
           <div className="message assistant no-avatar">
             <div className="assistant-body">
               <StreamingLoader 
