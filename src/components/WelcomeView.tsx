@@ -35,7 +35,10 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
       })
 
       if (selected) {
-        onProjectOpen(selected as string)
+        const folderPath = Array.isArray(selected) ? selected[0] : selected
+        if (typeof folderPath === 'string' && folderPath.length > 0) {
+          onProjectOpen(folderPath)
+        }
       }
     } catch (err) {
       console.error('Failed to open folder:', err)

@@ -51,9 +51,12 @@ export function FileTree() {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const selected = await open({ directory: true, multiple: false, title: 'Open Repository' })
-      if (!selected || typeof selected !== 'string') return
+      if (!selected) return
 
-      const repoPath = selected as string
+      const repoPathCandidate = Array.isArray(selected) ? selected[0] : selected
+      if (typeof repoPathCandidate !== 'string' || repoPathCandidate.length === 0) return
+
+      const repoPath = repoPathCandidate
       const projectName = repoPath.split('/').pop() || repoPath
 
       const workspace = useWorkspaceStore.getState()
