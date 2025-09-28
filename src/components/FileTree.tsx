@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { readDir, exists, BaseDirectory } from '@tauri-apps/plugin-fs'
 import { ChevronRight, ChevronDown, Folder, FolderOpen, X, GitBranch, Search } from 'lucide-react'
@@ -411,79 +411,10 @@ export function FileTree() {
     return acc
   }
 
-  // Render tree using virtualization
-  function renderTree(items: FileNode[]) {
-    const filtered = filterNodes(items, searchQuery)
-    const flatNodes = flattenNodes(filtered)
-
-    return (
-      <Virtuoso
-        style={{ height: '100%' }}
-        data={flatNodes}
-        itemContent={(_index, { node, depth }) => {
-          const isDir = node.kind === 'dir'
-          const isExpanded = !!node.expanded
-          const { icon: FileIcon, color } = isDir
-            ? { icon: isExpanded ? FolderOpen : Folder, color: 'var(--text-secondary)' }
-            : getFileIcon(node.name)
-
-          const fileStatus = gitStatus.get(node.path)
-          const hasChanges = isDir
-            ? Array.from(gitStatus.keys()).some(path => path.startsWith(node.path + '/'))
-            : !!fileStatus
-          const statusColor = fileStatus
-            ? getStatusColor(fileStatus)
-            : hasChanges
-              ? '#e2b340'
-              : undefined
-
-          return (
-            <div
-              className="file-item"
-              style={{ paddingLeft: `${12 + depth * 16}px` }}
-              onClick={() => (isDir ? toggleDir(node) : openFile(node))}
-            >
-              {isDir && (
-                <span className="file-chevron">
-                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </span>
-              )}
-              <FileIcon size={16} className="file-icon" style={{ color }} />
-              <span className="file-name">{node.name}</span>
-              {showGitStatus && statusColor && (
-                <Tooltip
-                  content={
-                    fileStatus
-                      ? `${fileStatus.status}${fileStatus.staged ? ' (staged)' : ''}`
-                      : 'Has changes'
-                  }
-                  delay={200}
-                >
-                  <span
-                    className="file-status-indicator"
-                    style={{
-                      display: 'inline-block',
-                      width: '6px',
-                      height: '6px',
-                      borderRadius: '50%',
-                      backgroundColor: statusColor,
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (!isDir && fileStatus) {
-                        const sessionStore = useSession.getState()
-                        sessionStore.setWorkbenchTab('diffs')
-                      }
-                    }}
-                  />
-                </Tooltip>
-              )}
-            </div>
-          )
-        }}
-      />
-    )
-  }
+  const flatNodes = useMemo(() => {
+    const filtered = filterNodes(nodes, searchQuery)
+    return flattenNodes(filtered)
+  }, [nodes, searchQuery])
 
 // ... (rest of the code remains the same)
 
@@ -569,7 +500,71 @@ export function FileTree() {
             <p>Loading files...</p>
           </div>
         ) : nodes.length > 0 ? (
-          renderTree(nodes)
+          <Virtuoso
+            style={{ height: '100%' }}
+            data={flatNodes}
+            itemContent={(_index, { node, depth }) => {
+              const isDir = node.kind === 'dir'
+              const isExpanded = !!node.expanded
+              const { icon: FileIcon, color } = isDir
+                ? { icon: isExpanded ? FolderOpen : Folder, color: 'var(--text-secondary)' }
+                : getFileIcon(node.name)
+
+              const fileStatus = gitStatus.get(node.path)
+              const hasChanges = isDir
+                ? Array.from(gitStatus.keys()).some(path => path.startsWith(node.path + '/'))
+                : !!fileStatus
+              const statusColor = fileStatus
+                ? getStatusColor(fileStatus)
+                : hasChanges
+                  ? '#e2b340'
+                  : undefined
+
+              return (
+                <div
+                  className="file-item"
+                  style={{ paddingLeft: `${12 + depth * 16}px` }}
+                  onClick={() => (isDir ? toggleDir(node) : openFile(node))}
+                >
+                  {isDir && (
+                    <span className="file-chevron">
+                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                  )}
+                  <FileIcon size={16} className="file-icon" style={{ color }} />
+                  <span className="file-name">{node.name}</span>
+                  {showGitStatus && statusColor && (
+                    <Tooltip
+                      content={
+                        fileStatus
+                          ? `${fileStatus.status}${fileStatus.staged ? ' (staged)' : ''}`
+                          : 'Has changes'
+                      }
+                      delay={200}
+                    >
+                      <span
+                        className="file-status-indicator"
+                        style={{
+                          display: 'inline-block',
+                          width: '6px',
+                          height: '6px',
+                          borderRadius: '50%',
+                          backgroundColor: statusColor,
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (!isDir && fileStatus) {
+                            const sessionStore = useSession.getState()
+                            sessionStore.setWorkbenchTab('diffs')
+                          }
+                        }}
+                      />
+                    </Tooltip>
+                  )}
+                </div>
+              )
+            }}
+          />
         ) : (
           <div className="file-tree-empty">
             <p>Empty folder</p>
