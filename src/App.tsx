@@ -22,6 +22,7 @@ import { useProjectLifecycle } from './hooks/useProjectLifecycle'
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts'
 import { SettingsView } from './components/SettingsView'
 import { useSettings } from './state/settings'
+import { normalizeDialogSelection } from './utils/dialog'
 
 function useCssWidth(key: string, fallback: number) {
   const [width, setWidth] = useState(() => {
@@ -74,8 +75,9 @@ export default function App() {
         title: 'Open Project Folder'
       })
 
-      if (selected) {
-        openProject(selected as string)
+      const folderPath = normalizeDialogSelection(selected)
+      if (folderPath) {
+        await openProject(folderPath)
       }
     } catch (err) {
       console.error('Failed to open folder:', err)

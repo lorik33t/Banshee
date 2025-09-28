@@ -2,6 +2,7 @@ import { FolderOpen, GitBranch, Clock, Sparkles, Play } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { useWorkspaceStore } from '../state/workspace'
 import { useState, useEffect } from 'react'
+import { normalizeDialogSelection } from '../utils/dialog'
 
 export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) => void }) {
   const { recentProjects } = useWorkspaceStore()
@@ -34,8 +35,9 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
         title: 'Open Project Folder'
       })
 
-      if (selected) {
-        onProjectOpen(selected as string)
+      const folderPath = normalizeDialogSelection(selected)
+      if (folderPath) {
+        onProjectOpen(folderPath)
       }
     } catch (err) {
       console.error('Failed to open folder:', err)

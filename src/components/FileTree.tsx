@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { path } from '@tauri-apps/api'
 import { runTauriFileSystemDiagnostics, formatDiagnosticResults } from '../utils/tauriDiagnostics'
 import { getGitStatus, type GitFileStatus } from '../utils/gitStatus'
+import { normalizeDialogSelection } from '../utils/dialog'
 import { Tooltip } from './Tooltip'
 
 interface FileNode {
@@ -51,9 +52,8 @@ export function FileTree() {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const selected = await open({ directory: true, multiple: false, title: 'Open Repository' })
-      if (!selected || typeof selected !== 'string') return
-
-      const repoPath = selected as string
+      const repoPath = normalizeDialogSelection(selected)
+      if (!repoPath) return
       const projectName = repoPath.split('/').pop() || repoPath
 
       const workspace = useWorkspaceStore.getState()
