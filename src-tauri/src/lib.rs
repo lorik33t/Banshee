@@ -316,7 +316,7 @@ struct CommandResult {
 }
 
 #[tauri::command]
-fn run_command(command: String, cwd: Option<String>) -> Result<CommandResult, String> {
+async fn run_command(command: String, cwd: Option<String>) -> Result<CommandResult, String> {
     use std::env;
 
     let working_dir = cwd.unwrap_or_else(|| {
@@ -364,13 +364,21 @@ fn run_command(command: String, cwd: Option<String>) -> Result<CommandResult, St
         (working_dir.clone(), command.as_str())
     };
 
-    // Execute the command
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(actual_command)
-        .current_dir(&working_dir)
-        .output()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+    let working_dir_for_spawn = working_dir.clone();
+    let new_cwd_for_result = new_cwd.clone();
+    let actual_command_owned = actual_command.to_string();
+
+    // Execute the command on a blocking thread so we don't freeze the async runtime
+    let output = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        Command::new("sh")
+            .arg("-c")
+            .arg(actual_command_owned)
+            .current_dir(&working_dir_for_spawn)
+            .output()
+            .map_err(|e| format!("Failed to execute command: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Failed to join command task: {}", e))??;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -387,24 +395,33 @@ fn run_command(command: String, cwd: Option<String>) -> Result<CommandResult, St
     Ok(CommandResult {
         output: combined_output,
         exit_code,
-        cwd: new_cwd,
+        cwd: new_cwd_for_result,
     })
 }
 
 #[tauri::command]
-fn execute_command(command: String) -> Result<String, String> {
+async fn execute_command(command: String) -> Result<String, String> {
     let project_dir = PROJECT_DIR.lock().unwrap().clone();
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(if project_dir.is_empty() {
-            "."
-        } else {
-            &project_dir
-        })
-        .output()
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+    let working_dir = if project_dir.is_empty() {
+        String::from(".")
+    } else {
+        project_dir.clone()
+    };
+
+    let command_owned = command.clone();
+    let working_dir_for_spawn = working_dir.clone();
+
+    let output = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        Command::new("sh")
+            .arg("-c")
+            .arg(command_owned)
+            .current_dir(&working_dir_for_spawn)
+            .output()
+            .map_err(|e| format!("Failed to execute command: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Failed to join command task: {}", e))??;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
