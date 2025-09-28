@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useSession } from '../state/session'
 import { Message } from './Message'
 import { ThinkingOutput } from './ThinkingOutput'
@@ -54,81 +54,86 @@ export function ChatView() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [showTerminal, setShowTerminal, isStreaming])
 
-  const items: ConversationItem[] = []
-  
-  const messageMap = new Map<string, MessageEvent>()
-  messages.forEach(msg => {
-    const existing = messageMap.get(msg.id)
-    if (!existing || (msg.ts ?? 0) > (existing.ts ?? 0)) {
-      messageMap.set(msg.id, msg)
-    }
-  })
-  
-  messageMap.forEach(msg => {
-    items.push({ type: 'message', event: msg })
-  })
+  const items = useMemo(() => {
+    const items: ConversationItem[] = []
 
-  const thinkingEvents = events.filter(
-    (event): event is ThinkingEvent => event.type === 'thinking'
-  )
+    const messageMap = new Map<string, MessageEvent>()
+    messages.forEach((msg) => {
+      const existing = messageMap.get(msg.id)
+      if (!existing || (msg.ts ?? 0) > (existing.ts ?? 0)) {
+        messageMap.set(msg.id, msg)
+      }
+    })
 
-  const reasoningByHeading = new Map<string, ThinkingEvent>()
+    messageMap.forEach((msg) => {
+      items.push({ type: 'message', event: msg })
+    })
 
-  for (const event of thinkingEvents) {
-    const currentText = (event.fullText ?? event.text ?? '').trim()
-    if (currentText.length < 20) {
-      continue
-    }
+    const thinkingEvents = events.filter(
+      (event): event is ThinkingEvent => event.type === 'thinking'
+    )
 
-    const headingMatch = currentText.match(/\*\*([^*]+)\*\*/)
-    const heading = headingMatch ? headingMatch[1].trim() : ''
-    if (!heading.length) {
-      continue
-    }
+    const reasoningByHeading = new Map<string, ThinkingEvent>()
 
-    const words = heading
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean)
-    const baseKey = words.slice(0, 2).join(' ') || heading.toLowerCase()
-    const existing = reasoningByHeading.get(baseKey)
+    for (const event of thinkingEvents) {
+      const currentText = (event.fullText ?? event.text ?? '').trim()
+      if (currentText.length < 20) {
+        continue
+      }
 
-    if (!existing) {
-      reasoningByHeading.set(baseKey, event)
-      continue
-    }
+      const headingMatch = currentText.match(/\*\*([^*]+)\*\*/)
+      const heading = headingMatch ? headingMatch[1].trim() : ''
+      if (!heading.length) {
+        continue
+      }
 
-    const existingText = (existing.fullText ?? existing.text ?? '').trim()
+      const words = heading
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+      const baseKey = words.slice(0, 2).join(' ') || heading.toLowerCase()
+      const existing = reasoningByHeading.get(baseKey)
 
-    if (event.done && !existing.done) {
-      reasoningByHeading.set(baseKey, event)
-      continue
-    }
+      if (!existing) {
+        reasoningByHeading.set(baseKey, event)
+        continue
+      }
 
-    if (currentText.length >= existingText.length) {
-      reasoningByHeading.set(baseKey, event)
-    }
-  }
+      const existingText = (existing.fullText ?? existing.text ?? '').trim()
 
-  reasoningByHeading.forEach((event) => {
-    items.push({ type: 'thinking', event, toolIds: [] })
-  })
+      if (event.done && !existing.done) {
+        reasoningByHeading.set(baseKey, event)
+        continue
+      }
 
-  Object.values(tools).forEach(tool => {
-    if (tool && (tool.output || !tool.done)) {
-      const toolName = (tool.tool || '').toLowerCase()
-      const shouldShowAsCard = toolName === 'task' ||
-                              toolName === 'webfetch' ||
-                              toolName === 'websearch' ||
-                              toolName === 'todowrite'
-
-      if (shouldShowAsCard) {
-        items.push({ type: 'tool', event: tool as any, toolIds: [tool.id] })
+      if (currentText.length >= existingText.length) {
+        reasoningByHeading.set(baseKey, event)
       }
     }
-  })
-  
-  items.sort((a, b) => (a.event?.ts ?? 0) - (b.event?.ts ?? 0))
+
+    reasoningByHeading.forEach((event) => {
+      items.push({ type: 'thinking', event, toolIds: [] })
+    })
+
+    Object.values(tools).forEach((tool) => {
+      if (tool && (tool.output || !tool.done)) {
+        const toolName = (tool.tool || '').toLowerCase()
+        const shouldShowAsCard =
+          toolName === 'task' ||
+          toolName === 'webfetch' ||
+          toolName === 'websearch' ||
+          toolName === 'todowrite'
+
+        if (shouldShowAsCard) {
+          items.push({ type: 'tool', event: tool as any, toolIds: [tool.id] })
+        }
+      }
+    })
+
+    items.sort((a, b) => (a.event?.ts ?? 0) - (b.event?.ts ?? 0))
+
+    return items
+  }, [events, messages, tools])
 
   if (items.length === 0 && !showTerminal) {
     return (
