@@ -75,7 +75,10 @@ export default function App() {
       })
 
       if (selected) {
-        openProject(selected as string)
+        const folderPath = Array.isArray(selected) ? selected[0] : selected
+        if (typeof folderPath === 'string' && folderPath.length > 0) {
+          await openProject(folderPath)
+        }
       }
     } catch (err) {
       console.error('Failed to open folder:', err)
