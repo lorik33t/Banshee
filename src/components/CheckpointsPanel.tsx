@@ -15,16 +15,18 @@ type CheckpointMeta = {
 
 export function CheckpointsPanel() {
   const projectDir = useSession(s => s.projectDir)
+  const sessionId = useSession(s => s.sessionId)
   const [items, setItems] = useState<CheckpointMeta[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | undefined>()
 
   const refresh = async () => {
     if (!(window as any).__TAURI__) return
+    if (!sessionId) return
     setLoading(true)
     setError(undefined)
     try {
-      const list = await invoke<CheckpointMeta[]>('list_checkpoints')
+      const list = await invoke<CheckpointMeta[]>('list_checkpoints', { sessionId: sessionId })
       setItems(Array.isArray(list) ? list : [])
     } catch (e: any) {
       setError(String(e))
@@ -33,11 +35,11 @@ export function CheckpointsPanel() {
     }
   }
 
-  useEffect(() => { refresh() }, [projectDir])
+  useEffect(() => { if (sessionId) { refresh() } }, [projectDir, sessionId])
 
   const restore = async (id: string) => {
     try {
-      await invoke('restore_checkpoint', { checkpointId: id })
+      await invoke('restore_checkpoint', { sessionId: sessionId, checkpointId: id })
     } catch (e) {
       console.error('Failed to restore checkpoint', e)
     }
@@ -45,7 +47,7 @@ export function CheckpointsPanel() {
 
   const remove = async (id: string) => {
     try {
-      await invoke('delete_checkpoint', { checkpointId: id })
+      await invoke('delete_checkpoint', { sessionId: sessionId, checkpointId: id })
       setItems(prev => prev.filter(x => x.id !== id))
     } catch (e) {
       console.error('Failed to delete checkpoint', e)

@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter};
 
 pub struct Terminal {
     master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     reader_thread: Option<thread::JoinHandle<()>>,
 }
@@ -23,7 +24,12 @@ impl TerminalManager {
         }
     }
 
-    pub fn create_terminal(&self, id: String, app: AppHandle) -> Result<(), String> {
+    pub fn create_terminal(
+        &self,
+        id: String,
+        app: AppHandle,
+        working_dir: Option<String>,
+    ) -> Result<(), String> {
         let pty_system = native_pty_system();
 
         // Create a new PTY with a specific size
@@ -38,30 +44,39 @@ impl TerminalManager {
 
         // Get the user's shell or default to bash
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        eprintln!("Starting shell: {}", shell);
+        eprintln!("[Terminal] Starting shell: {}", shell);
 
-        // Get project directory
-        let project_dir = crate::PROJECT_DIR.lock().unwrap().clone();
-
-        // Build the command with interactive flags
+        // Build the command - use explicit non-login shell to avoid session save/restore
         let mut cmd = CommandBuilder::new(&shell);
 
-        // Add interactive flag for the shell
-        if shell.contains("bash") {
-            cmd.args(&["-i"]); // Interactive mode
-        } else if shell.contains("zsh") {
-            cmd.args(&["-i"]); // Interactive mode
-        } else if shell.contains("fish") {
-            cmd.args(&["-i"]); // Interactive mode
+        // Explicitly prevent login shell behavior which causes "Restored session" spam
+        if shell.contains("zsh") {
+            // For zsh: no flags needed, PTY makes it interactive automatically
+            // Specifically avoid -l (login) flag
+        } else if shell.contains("bash") {
+            // For bash: use --norc to skip .bashrc but still be interactive
+            cmd.args(&["--norc"]);
         }
 
-        if !project_dir.is_empty() {
-            cmd.cwd(&project_dir);
+        // Set working directory if provided
+        if let Some(dir) = working_dir.as_ref() {
+            if !dir.is_empty() {
+                eprintln!("[Terminal] Setting working directory to: {}", dir);
+                cmd.cwd(dir);
+            } else {
+                eprintln!("[Terminal] Working directory is empty, using default");
+            }
+        } else {
+            eprintln!("[Terminal] No working directory provided, using default");
         }
 
         // Critical: Set TERM before spawning to ensure proper terminal setup
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+
+        // Prevent zsh from treating this as a login shell
+        // This stops "Restored session" and "Saving session" messages
+        cmd.env("SHLVL", "1");
 
         // Pass through PATH and other essential environment
         if let Ok(path) = std::env::var("PATH") {
@@ -74,40 +89,74 @@ impl TerminalManager {
             cmd.env("USER", user);
         }
 
+        // Disable macOS Terminal session save/restore completely
+        cmd.env("SHELL_SESSIONS_DISABLE", "1");
+        cmd.env("SHELL_SESSION_HISTORY", "0");
+
+        // Prevent Terminal.app's session restoration hooks from loading
+        cmd.env("TERM_SESSION_ID", "");
+        cmd.env("TERM_PROGRAM", "Banshee");
+        cmd.env("TERM_PROGRAM_VERSION", "1.0");
+
+        // Tell shells this is a subshell, not a login shell
+        if shell.contains("zsh") {
+            // This prevents .zlogin/.zlogout from running
+            cmd.env("ZSH_DISABLE_COMPFIX", "true");
+        }
+
         // Spawn the shell process
         let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
 
-        // Get a reader for the master PTY
+        // Get reader and writer for the master PTY
         let mut reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone reader: {}", e))?;
 
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to get writer: {}", e))?;
+
         // Start a thread to read output
         let terminal_id = id.clone();
         let app_handle = app.clone();
         let reader_thread = thread::spawn(move || {
-            let mut buffer = [0u8; 4096];
+            let mut buffer = [0u8; 8192]; // Increase buffer size for better throughput
+            let mut consecutive_errors = 0;
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => {
                         // EOF - shell has exited
+                        eprintln!("[Terminal {}] Shell process exited", terminal_id);
                         let _ = app_handle.emit(&format!("terminal:exit:{}", terminal_id), "");
                         break;
                     }
                     Ok(n) => {
+                        consecutive_errors = 0; // Reset error count on successful read
                         let output = String::from_utf8_lossy(&buffer[..n]).to_string();
-                        // Debug what we're sending back
-                        eprintln!("PTY output: {:?} (bytes: {:?})", output, &buffer[..n]);
+                        // Send raw output without modification - let xterm.js handle it
                         let _ =
                             app_handle.emit(&format!("terminal:output:{}", terminal_id), output);
                     }
                     Err(e) => {
-                        eprintln!("Error reading from PTY: {}", e);
-                        break;
+                        consecutive_errors += 1;
+                        eprintln!(
+                            "[Terminal {}] Error reading from PTY (count: {}): {}",
+                            terminal_id, consecutive_errors, e
+                        );
+                        if consecutive_errors > 10 {
+                            eprintln!(
+                                "[Terminal {}] Too many consecutive errors, terminating reader",
+                                terminal_id
+                            );
+                            break;
+                        }
+                        // Small delay to avoid tight loop on persistent errors
+                        std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 }
             }
@@ -115,6 +164,7 @@ impl TerminalManager {
 
         let terminal = Terminal {
             master: pair.master,
+            writer,
             child,
             reader_thread: Some(reader_thread),
         };
@@ -124,30 +174,20 @@ impl TerminalManager {
     }
 
     pub fn write_to_terminal(&self, id: &str, data: &str) -> Result<(), String> {
-        // Debug log what we're receiving
-        eprintln!(
-            "write_to_terminal received: {:?} (bytes: {:?})",
-            data,
-            data.as_bytes()
-        );
-
         let mut terminals = self.terminals.lock().unwrap();
         let terminal = terminals
             .get_mut(id)
             .ok_or_else(|| "Terminal not found".to_string())?;
 
-        let mut writer = terminal
-            .master
-            .take_writer()
-            .map_err(|e| format!("Failed to get writer: {}", e))?;
-
-        // Write data to the terminal
-        writer
+        // Use the stored writer instead of taking it (which would consume it)
+        terminal
+            .writer
             .write_all(data.as_bytes())
             .map_err(|e| format!("Failed to write to terminal: {}", e))?;
 
         // Flush to ensure data is sent immediately
-        writer
+        terminal
+            .writer
             .flush()
             .map_err(|e| format!("Failed to flush terminal: {}", e))?;
 

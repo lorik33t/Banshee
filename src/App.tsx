@@ -1,11 +1,20 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useState,
 } from 'react'
 import type { MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react'
-import { PanelLeftOpen, PanelLeftClose, PanelRightOpen, PanelRightClose, RefreshCw, Settings as SettingsIcon, FolderOpen } from 'lucide-react'
+import {
+  PanelLeftOpen,
+  PanelLeftClose,
+  PanelRightOpen,
+  PanelRightClose,
+  RefreshCw,
+  Settings as SettingsIcon,
+  FolderOpen,
+  Plus,
+  X,
+} from 'lucide-react'
 import './index.css'
 import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
@@ -22,6 +31,14 @@ import { useProjectLifecycle } from './hooks/useProjectLifecycle'
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts'
 import { SettingsView } from './components/SettingsView'
 import { useSettings } from './state/settings'
+import { invoke } from '@tauri-apps/api/core'
+
+type TauriWindow = Window & { __TAURI__?: unknown }
+
+const getTauriWindow = (): TauriWindow | null => {
+  if (typeof window === 'undefined') return null
+  return '__TAURI__' in window ? (window as TauriWindow) : null
+}
 
 function useCssWidth(key: string, fallback: number) {
   const [width, setWidth] = useState(() => {
@@ -43,11 +60,17 @@ function useCssWidth(key: string, fallback: number) {
 
 export default function App() {
   const { activeProject, openProject, closeProject } = useProjectLifecycle()
-  const projectDir = useSession((s) => s.projectDir)
+  const sessionId = useSession((s) => s.sessionId)
+  const sessionOrder = useSession((s) => s.sessionOrder)
+  const sessionMeta = useSession((s) => s.sessionMeta)
+  const createSession = useSession((s) => s.createSession)
+  const switchSession = useSession((s) => s.switchSession)
+  const closeSession = useSession((s) => s.closeSession)
   const workbenchTab = useSession((s) => s.ui.workbenchTab)
   const setWorkbenchTab = useSession((s) => s.setWorkbenchTab)
   const openSettings = useSettings((s) => s.openSettings)
   const loadSettings = useSettings((s) => s.loadSettings)
+  const themePreference = useSettings((s) => s.settings.theme)
 
   const [leftSidebarWidth, setLeftSidebarWidth] = useCssWidth('ls-width', 320)
   const [workbenchWidth, setWorkbenchWidth] = useCssWidth('wb-width', 420)
@@ -65,7 +88,7 @@ export default function App() {
   }, [])
 
   const openFolder = useCallback(async () => {
-    if (!(window as any).__TAURI__) return
+    if (!getTauriWindow()) return
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const selected = await open({
@@ -100,6 +123,36 @@ export default function App() {
   useEffect(() => {
     loadSettings()
   }, [loadSettings])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return
+    const root = document.documentElement
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+
+    const applyTheme = () => {
+      const mode = themePreference ?? 'system'
+      const resolved = mode === 'dark' ? 'dark' : mode === 'light' ? 'light' : media.matches ? 'dark' : 'light'
+      if (resolved === 'dark') {
+        root.setAttribute('data-theme', 'dark')
+      } else {
+        root.removeAttribute('data-theme')
+      }
+    }
+
+    applyTheme()
+
+    if (!themePreference || themePreference === 'system') {
+      const listener = () => applyTheme()
+      if (typeof media.addEventListener === 'function') {
+        media.addEventListener('change', listener)
+        return () => media.removeEventListener('change', listener)
+      }
+      media.addListener(listener)
+      return () => media.removeListener(listener)
+    }
+
+    return undefined
+  }, [themePreference])
 
   useEffect(() => {
     if (!resizing) return
@@ -141,10 +194,27 @@ export default function App() {
     setResizing('right')
   }, [])
 
-  const projectName = useMemo(() => {
-    if (!activeProject) return 'Banshee'
-    return activeProject.name || activeProject.path.split('/').pop() || 'Project'
-  }, [activeProject])
+  const handleNewSession = useCallback(() => {
+    if (getTauriWindow()) {
+      void openFolder()
+    } else {
+      createSession(undefined)
+    }
+  }, [createSession, openFolder])
+
+  const handleCloseSession = useCallback(
+    async (id: string) => {
+      if (id === sessionId) {
+        closeProject()
+        return
+      }
+      if (getTauriWindow()) {
+        await invoke('stop_codex', { sessionId: id }).catch(() => {})
+      }
+      closeSession(id)
+    },
+    [closeProject, closeSession, sessionId]
+  )
 
   if (!activeProject) {
     return (
@@ -161,12 +231,37 @@ export default function App() {
       <header className="header">
         <div className="header-left">
           <div className="logo">
-            <span className="logo-icon">⚡︎</span>
-            <span>{projectName}</span>
+            <span>Banshee</span>
           </div>
-          {projectDir && (
-            <div className="project-info">
-              <span className="project-path" title={projectDir}>{projectDir}</span>
+          {sessionOrder.length > 0 && (
+            <div className="session-tabs">
+              {sessionOrder.map((id) => {
+                const meta = sessionMeta[id]
+                const isActive = id === sessionId
+                return (
+                  <button
+                    key={id}
+                    className={`session-tab ${isActive ? 'active' : ''}`}
+                    onClick={() => switchSession(id)}
+                  >
+                    <span className="session-tab-label">{meta?.name ?? 'Session'}</span>
+                    {sessionOrder.length > 1 && (
+                      <span
+                        className="session-tab-close"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleCloseSession(id)
+                        }}
+                      >
+                        <X size={12} />
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+              <button className="session-tab add" onClick={handleNewSession} title="Open project in new session">
+                <Plus size={14} />
+              </button>
             </div>
           )}
         </div>

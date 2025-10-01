@@ -1,11 +1,10 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { readDir, exists, BaseDirectory } from '@tauri-apps/plugin-fs'
-import { ChevronRight, ChevronDown, Folder, FolderOpen, X, GitBranch, Search } from 'lucide-react'
+import { ChevronRight, ChevronDown, Folder, FolderOpen, GitBranch, Search } from 'lucide-react'
 import { useSession } from '../state/session'
 import { useWorkspaceStore } from '../state/workspace'
 import { getFileIcon } from '../utils/fileIcons'
-import { invoke } from '@tauri-apps/api/core'
 import { path } from '@tauri-apps/api'
 import { runTauriFileSystemDiagnostics, formatDiagnosticResults } from '../utils/tauriDiagnostics'
 import { getGitStatus, type GitFileStatus } from '../utils/gitStatus'
@@ -21,7 +20,6 @@ interface FileNode {
 
 export function FileTree() {
   const projectDir = useSession((s) => s.projectDir)
-  const setProjectDir = useSession((s) => s.setProjectDir)
   const { activeProjectId, getProject } = useWorkspaceStore()
   const [nodes, setNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
@@ -36,7 +34,18 @@ export function FileTree() {
   
   // Get the active project path from workspace store
   const activeProject = activeProjectId ? getProject(activeProjectId) : null
-  const currentProjectPath = activeProject?.path || projectDir
+  const currentProjectPath = projectDir || activeProject?.path
+
+  const projectLabel = useMemo(() => {
+    if (activeProject?.name && activeProject.name.trim().length) {
+      return activeProject.name
+    }
+    if (currentProjectPath) {
+      const parts = currentProjectPath.split(/\\|\//).filter(Boolean)
+      return parts[parts.length - 1] ?? currentProjectPath
+    }
+    return ''
+  }, [activeProject?.name, currentProjectPath])
   
   // Add diagnostic helper
   const addDiagnostic = (msg: string) => {
@@ -45,38 +54,6 @@ export function FileTree() {
     console.log('[FileTree Diagnostic]', diagnostic)
     setDiagnostics(prev => [...prev.slice(-20), diagnostic]) // Keep last 20 diagnostics
   }
-
-  const handleOpenRepo = useCallback(async () => {
-    if (!(window as any).__TAURI__) return
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const selected = await open({ directory: true, multiple: false, title: 'Open Repository' })
-      if (!selected) return
-
-      const repoPathCandidate = Array.isArray(selected) ? selected[0] : selected
-      if (typeof repoPathCandidate !== 'string' || repoPathCandidate.length === 0) return
-
-      const repoPath = repoPathCandidate
-      const projectName = repoPath.split('/').pop() || repoPath
-
-      const workspace = useWorkspaceStore.getState()
-      const existing = workspace.projects.find((p) => p.path === repoPath)
-      if (existing) {
-        workspace.setActiveProject(existing.id)
-      } else {
-        const projectId = workspace.addProject({ name: projectName, path: repoPath })
-        workspace.setActiveProject(projectId)
-      }
-
-      const session = useSession.getState()
-      session.setProjectDir(repoPath)
-      setNodes([])
-      setSearchQuery('')
-      setSearchVisible(false)
-    } catch (err) {
-      console.error('Failed to open repository:', err)
-    }
-  }, [setProjectDir])
 
   // Load directory with comprehensive diagnostics
   async function loadDirectory(basePath: string, relativePath: string = ''): Promise<FileNode[]> {
@@ -343,26 +320,6 @@ export function FileTree() {
     }
   }
 
-  // Close current folder
-  async function closeFolder() {
-    try {
-      // Stop Claude
-      await invoke('interrupt_codex').catch(() => {})
-      
-      // Clear the project directory in session
-      setProjectDir(undefined)
-      setNodes([])
-      setSearchQuery('')
-      setSearchVisible(false)
-      
-      // Navigate back to welcome screen by reloading
-      // This will reset the app state and show the welcome view
-      window.location.reload()
-    } catch (err) {
-      console.error('Failed to close folder:', err)
-    }
-  }
-
   // Helpers for filtering and flattening the tree
   const getStatusColor = (status: GitFileStatus | undefined) => {
     if (!status) return undefined
@@ -431,20 +388,13 @@ export function FileTree() {
 
   return (
     <div className="file-tree">
-      <div className="file-tree-header">
-        <div className="file-tree-title">
-          <Folder size={16} />
-          <span>{currentProjectPath ? currentProjectPath.split('/').pop() : ''}</span>
-        </div>
+      <div className="file-tree-header file-tree-header--compact">
+        {projectLabel && (
+          <div className="file-tree-title" title={currentProjectPath ?? undefined}>
+            <span>{projectLabel}</span>
+          </div>
+        )}
         <div className="file-tree-actions">
-          <button
-            className="file-tree-button"
-            onClick={handleOpenRepo}
-            title="Open repository"
-          >
-            <FolderOpen size={14} />
-            <span>Open repo</span>
-          </button>
           <button
             className={`file-tree-action ${searchVisible ? 'active' : ''}`}
             onClick={() => {
@@ -461,17 +411,10 @@ export function FileTree() {
           <button
             className="file-tree-action"
             onClick={() => setShowGitStatus(!showGitStatus)}
-            title={showGitStatus ? "Hide git status" : "Show git status"}
+            title={showGitStatus ? 'Hide git status' : 'Show git status'}
             style={{ opacity: showGitStatus ? 1 : 0.5 }}
           >
             <GitBranch size={16} />
-          </button>
-          <button
-            className="file-tree-action"
-            onClick={closeFolder}
-            title="Close folder"
-          >
-            <X size={16} />
           </button>
         </div>
       </div>

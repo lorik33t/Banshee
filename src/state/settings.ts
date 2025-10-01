@@ -1,5 +1,13 @@
 import { create } from 'zustand'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
+import type { ModeOptionId, ApprovalPolicyValue, SandboxModeValue } from '../constants/codex'
+
+export interface SandboxWorkspaceWriteConfig {
+  writableRoots?: string[]
+  networkAccess?: boolean
+  excludeTmpdirEnvVar?: boolean
+  excludeSlashTmp?: boolean
+}
 
 export interface ClaudeSettings {
   // Permission settings
@@ -38,7 +46,7 @@ export interface ClaudeSettings {
   }>
   
   // UI/UX settings
-  theme?: string
+  theme?: 'light' | 'dark' | 'system'
   verbose?: boolean
   statusLine?: {
     type: 'command' | 'static'
@@ -48,6 +56,13 @@ export interface ClaudeSettings {
   preferredNotifChannel?: string
   planningMode?: boolean
   backgroundExecution?: boolean
+  approvalPolicy?: ApprovalPolicyValue
+  sandboxMode?: SandboxModeValue
+  sandboxWorkspaceWrite?: SandboxWorkspaceWriteConfig
+  defaultModeId?: ModeOptionId
+  defaultModelId?: string
+  fileOpener?: 'vscode' | 'vscode-insiders' | 'windsurf' | 'cursor' | 'none'
+  historyPersistence?: 'save-all' | 'none'
   
   // System settings
   cleanupPeriodDays?: number
@@ -62,7 +77,7 @@ export interface ClaudeSettings {
   
   // Projects configuration
   projects?: Record<string, {
-    mcpServers?: Record<string, any>
+    mcpServers?: Record<string, Record<string, unknown>>
     env?: Record<string, string>
   }>
   
@@ -122,11 +137,25 @@ export const useSettings = create<SettingsState>((set, get) => ({
     verbose: false,
     checkpointClearOnStartup: false,
     streamingSpeed: 'normal',
+    theme: 'system',
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+    sandboxWorkspaceWrite: {
+      writableRoots: [],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    },
+    defaultModeId: 'agent-full',
+    defaultModelId: 'gpt-5-codex-high',
+    fileOpener: 'vscode',
+    historyPersistence: 'save-all',
     // New defaults
     mcpEnabled: true,
     webSearchEnabled: false,
     includeDirs: [],
     autonomy: 50,
+    planningMode: false,
     agents: {
       gemini: { enabled: true },
       qwen: { enabled: true },
@@ -170,16 +199,16 @@ export const useSettings = create<SettingsState>((set, get) => ({
   loadSettings: async () => {
     set({ isLoading: true, error: undefined })
     try {
-      // Check if Tauri is available
-      // @ts-ignore - Tauri window
-      if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-        // Use Tauri API invoke (v2) instead of window.__TAURI__.invoke
+      const hasTauri = typeof window !== 'undefined' && Boolean((window as { __TAURI__?: unknown }).__TAURI__)
+      if (hasTauri) {
         const settings = await tauriInvoke<ClaudeSettings>('load_settings')
-        // Mirror to localStorage so ModelRouter (which reads localStorage) stays in sync
-        try { localStorage.setItem('claude_settings', JSON.stringify(settings || {})) } catch {}
+        try {
+          localStorage.setItem('claude_settings', JSON.stringify(settings ?? {}))
+        } catch (storageError) {
+          console.warn('[Settings] Failed to cache settings', storageError)
+        }
         set({ settings, isLoading: false })
       } else {
-        // Running in browser - load from localStorage as fallback
         const stored = localStorage.getItem('claude_settings')
         if (stored) {
           set({ settings: JSON.parse(stored), isLoading: false })
@@ -188,46 +217,58 @@ export const useSettings = create<SettingsState>((set, get) => ({
         }
       }
     } catch (err) {
-      // On failure, fall back to localStorage and surface a concise error
       try {
         const stored = localStorage.getItem('claude_settings')
         if (stored) {
           set({ settings: JSON.parse(stored), isLoading: false, error: `Using local settings: ${err}` })
           return
         }
-      } catch {}
+      } catch (fallbackError) {
+        console.warn('[Settings] Failed to load fallback settings', fallbackError)
+      }
       set({ error: `Failed to load settings: ${err}`, isLoading: false })
     }
   },
-  
+
   saveSettings: async (settings: ClaudeSettings) => {
     set({ isLoading: true, error: undefined })
     try {
-      // Check if Tauri is available
-      // @ts-ignore - Tauri window
-      if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-        // Use Tauri API invoke (v2) instead of window.__TAURI__.invoke
+      const hasTauri = typeof window !== 'undefined' && Boolean((window as { __TAURI__?: unknown }).__TAURI__)
+      if (hasTauri) {
         await tauriInvoke('save_settings', { settings })
-        // Also mirror to localStorage so router sees the updated flags immediately
-        try { localStorage.setItem('claude_settings', JSON.stringify(settings || {})) } catch {}
+        try {
+          localStorage.setItem('claude_settings', JSON.stringify(settings ?? {}))
+        } catch (storageError) {
+          console.warn('[Settings] Failed to cache settings', storageError)
+        }
       } else {
-        // Running in browser - save to localStorage as fallback
-        localStorage.setItem('claude_settings', JSON.stringify(settings || {}))
+        localStorage.setItem('claude_settings', JSON.stringify(settings ?? {}))
       }
       set({ settings, isLoading: false })
     } catch (err) {
-      set({ 
-        error: `Failed to save settings: ${err}`,
-        isLoading: false 
-      })
+      set({ error: `Failed to save settings: ${err}`, isLoading: false })
     }
   },
   
   updateSetting: (key, value) => {
     const current = get().settings
-    set({ 
-      settings: { ...current, [key]: value }
-    })
+    const next = { ...current, [key]: value }
+
+    // Keep derived settings in sync when defaults change
+    if (key === 'defaultModeId' && typeof value === 'string') {
+      next.approvalPolicy = (value === 'chat-plan'
+        ? 'on-request'
+        : value === 'agent'
+          ? 'on-failure'
+          : 'never') as ApprovalPolicyValue
+      next.sandboxMode = (value === 'chat-plan'
+        ? 'workspace-write'
+        : value === 'agent'
+          ? 'workspace-write'
+          : 'danger-full-access') as SandboxModeValue
+    }
+
+    set({ settings: next })
   },
   
   openSettings: () => set({ isOpen: true }),

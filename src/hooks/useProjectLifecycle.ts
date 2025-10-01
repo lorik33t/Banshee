@@ -4,29 +4,41 @@ import { useSession } from '../state/session'
 import { useWorkspaceStore } from '../state/workspace'
 
 export function useProjectLifecycle() {
-  const [codexReady, setCodexReady] = useState(false)
-  const sessionStore = useSession()
-  const { activeProjectId, getProject } = useWorkspaceStore()
+  const [codexReady, setCodexReady] = useState(true)
+  const sessionId = useSession((s) => s.sessionId)
+  const sessionMeta = useSession((s) => s.sessionMeta)
+  const projectDir = useSession((s) => s.projectDir)
+  const createSession = useSession((s) => s.createSession)
+  const switchSession = useSession((s) => s.switchSession)
+  const closeSession = useSession((s) => s.closeSession)
+  const setProjectDir = useSession((s) => s.setProjectDir)
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId)
+  const getProject = useWorkspaceStore((s) => s.getProject)
   const activeProject = activeProjectId ? getProject(activeProjectId) : null
   const lastOpenedPathRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    if (activeProject && !sessionStore.projectDir) {
-      sessionStore.setProjectDir(activeProject.path)
-    }
-  }, [activeProject?.path, sessionStore.projectDir, sessionStore])
-
-  const openProject = useCallback(async (path: string) => {
+  const openProject = useCallback((path: string) => {
     lastOpenedPathRef.current = path
-    setCodexReady(false)
 
-    sessionStore.setProjectDir(path)
+    const existing = Object.values(sessionMeta).find((meta) => meta.projectDir === path)
+    let targetSessionId = sessionId
+
+    if (existing) {
+      if (existing.id !== sessionId) {
+        switchSession(existing.id)
+      }
+      targetSessionId = existing.id
+    } else {
+      targetSessionId = createSession(path)
+    }
+
+    setProjectDir(path)
 
     try {
       const { addProject, setActiveProject, projects } = useWorkspaceStore.getState()
       const projectName = path.split('/').pop() || path
 
-      const existingProject = projects.find(p => p.path === path)
+      const existingProject = projects.find((p) => p.path === path)
       if (existingProject) {
         setActiveProject(existingProject.id)
       } else {
@@ -37,39 +49,53 @@ export function useProjectLifecycle() {
       // Workspace persistence failed (likely permissions); continue with session only
     }
 
-    try {
-      await invoke('restart_codex', { projectDir: path })
-      setCodexReady(true)
-    } catch (err) {
-      console.error('Failed to restart Codex:', err)
-      setCodexReady(false)
+    if ((window as any).__TAURI__) {
+      console.log('[Lifecycle] prepared Codex session', targetSessionId, 'for', path)
     }
-  }, [sessionStore])
+    setCodexReady(true)
+  }, [createSession, sessionId, sessionMeta, setProjectDir, switchSession])
 
-  const closeProject = useCallback(async () => {
+  const closeProject = useCallback(() => {
+    const currentSessionId = useSession.getState().sessionId
     lastOpenedPathRef.current = null
     setCodexReady(false)
-    sessionStore.setProjectDir(undefined)
+    setProjectDir(undefined)
     const { setActiveProject } = useWorkspaceStore.getState()
     setActiveProject(null)
-    await invoke('stop_codex').catch(console.error)
-  }, [sessionStore])
+    if ((window as any).__TAURI__) {
+      invoke('stop_codex', { sessionId: currentSessionId }).catch(console.error)
+    }
+    closeSession(currentSessionId)
+  }, [closeSession, setProjectDir])
 
   useEffect(() => {
-    if (activeProject?.path) {
-      if (lastOpenedPathRef.current !== activeProject.path) {
-        openProject(activeProject.path)
+    const workspace = useWorkspaceStore.getState()
+    if (projectDir) {
+      lastOpenedPathRef.current = projectDir
+      const existing = workspace.projects.find((p) => p.path === projectDir)
+      if (existing) {
+        if (workspace.activeProjectId !== existing.id) {
+          workspace.setActiveProject(existing.id)
+        }
+      } else {
+        const name = projectDir.split('/').pop() || projectDir
+        const id = workspace.addProject({ name, path: projectDir })
+        workspace.setActiveProject(id)
       }
-    } else {
+    } else if (!projectDir && activeProject?.path) {
+      // No session project yet; fall back to opening the workspace selection once.
+      openProject(activeProject.path)
+    } else if (!projectDir) {
       lastOpenedPathRef.current = null
       setCodexReady(false)
     }
-  }, [activeProject?.path, openProject])
+  }, [projectDir, activeProject?.path, openProject])
 
   useEffect(() => {
     return () => {
       if ((window as any).__TAURI__) {
-        invoke('stop_codex').catch(console.error)
+        const currentSessionId = useSession.getState().sessionId
+        invoke('stop_codex', { sessionId: currentSessionId }).catch(console.error)
       }
     }
   }, [])

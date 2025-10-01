@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { saveSession, loadSession, clearSession } from '../utils/sessionPersistence'
 import { invoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
+import { DEFAULT_MODE_ID, DEFAULT_MODEL_ID, type ModeOptionId } from '../constants/codex'
 
 export type Role = 'user' | 'assistant'
 export type ToolType = 'bash' | 'grep' | 'read' | 'write' | 'web' | 'mcp' | 'task'
@@ -103,6 +104,15 @@ export type CheckpointRecord = {
   fileCount: number
 }
 
+export type TurnSnapshot = {
+  id: string
+  turn: number
+  ts: number
+  summary?: string
+  checkpointId?: string
+  tool?: string
+}
+
 // Telemetry token stats (from Gemini/Qwen handlers)
 export type TokenUsageSnapshot = {
   input: number
@@ -110,6 +120,18 @@ export type TokenUsageSnapshot = {
   output: number
   reasoning: number
   total: number
+}
+
+export type RateLimitWindowSummary = {
+  usedPercent: number
+  windowMinutes?: number
+  resetsInSeconds?: number
+}
+
+export type RateLimitSummary = {
+  primary?: RateLimitWindowSummary
+  secondary?: RateLimitWindowSummary
+  primaryToSecondaryRatio?: number
 }
 
 export type TelemetryTokensEvent = {
@@ -121,6 +143,7 @@ export type TelemetryTokensEvent = {
   toolTokens?: number
   latencyMs?: number
   tokenUsage?: TokenUsageSnapshot
+  rateLimits?: RateLimitSummary
   contextWindow?: number
   contextEffective?: number
   contextUsedTokens?: number
@@ -175,15 +198,27 @@ export type ContextUsageState = {
   usedPct?: number
   remainingPct?: number
   tokenUsage?: TokenUsageSnapshot
+  rateLimits?: RateLimitSummary
 }
 
-export type SessionState = {
+
+type SessionMeta = {
+  id: string
+  name: string
+  projectDir?: string
+  createdAt: number
+}
+
+type SessionData = {
   events: SessionEvent[]
   messages: MessageEvent[]
   tools: Record<string, ToolRun>
   toolOrder: string[]
   edits: ProposedEdit[]
   checkpoints?: CheckpointRecord[]
+  turns: TurnSnapshot[]
+  currentTurnIndex: number
+  pendingCheckpointId?: string
   thinking?: { text: string; done: boolean }
   projectDir?: string
   permissions: {
@@ -200,58 +235,382 @@ export type SessionState = {
   streamingModel?: string
   streamingMessageId?: string
   pendingProjectDir?: string
-  // File tracking for checkpoints
+  pendingCheckpointId?: string
   fileTracker: {
-    originalContents: Map<string, string> // Original file contents before AI changes
-    modifiedFiles: Set<string> // Files modified in current AI interaction
+    originalContents: Map<string, string>
+    modifiedFiles: Set<string>
     isTracking: boolean
+  }
+  codexSelection: {
+    modelId: string
+    modeId: ModeOptionId
   }
   ui: {
     workbenchTab: 'diffs' | 'checkpoints' | 'codex'
   }
+}
 
+const createSessionId = () => `sess-${Math.random().toString(36).slice(2, 10)}`
+
+const cloneJson = <T>(value: T): T => {
+  const fn = (globalThis as any).structuredClone
+  if (typeof fn === 'function') {
+    return fn(value)
+  }
+  return JSON.parse(JSON.stringify(value))
+}
+
+const cloneTools = (tools: Record<string, ToolRun>): Record<string, ToolRun> => {
+  const result: Record<string, ToolRun> = {}
+  for (const [id, tool] of Object.entries(tools)) {
+    result[id] = {
+      ...tool,
+      args: cloneJson(tool.args ?? {}),
+      output: tool.output,
+    }
+  }
+  return result
+}
+
+const captureSessionSnapshot = (state: SessionState): SessionData => ({
+  events: state.events.map(cloneJson),
+  messages: state.messages.map(cloneJson),
+  tools: cloneTools(state.tools),
+  toolOrder: [...state.toolOrder],
+  edits: state.edits.map(cloneJson),
+  checkpoints: state.checkpoints ? state.checkpoints.map(cloneJson) : [],
+  turns: state.turns.map(cloneJson),
+  currentTurnIndex: state.currentTurnIndex,
+  thinking: state.thinking ? { ...state.thinking } : undefined,
+  projectDir: state.projectDir,
+  permissions: {
+    pending: state.permissions.pending ? cloneJson(state.permissions.pending) : undefined,
+    decisions: state.permissions.decisions.map(cloneJson),
+  },
+  cost: { ...state.cost },
+  contextUsage: state.contextUsage ? { ...state.contextUsage } : undefined,
+  autoAccept: state.autoAccept,
+  selectedEditId: state.selectedEditId,
+  showTerminal: state.showTerminal,
+  isStreaming: state.isStreaming,
+  streamingStartTime: state.streamingStartTime,
+  streamingModel: state.streamingModel,
+  streamingMessageId: state.streamingMessageId,
+  pendingProjectDir: state.pendingProjectDir,
+  pendingCheckpointId: state.pendingCheckpointId,
+  fileTracker: {
+    originalContents: new Map(state.fileTracker.originalContents),
+    modifiedFiles: new Set(state.fileTracker.modifiedFiles),
+    isTracking: state.fileTracker.isTracking,
+  },
+  codexSelection: { ...state.codexSelection },
+  ui: { ...state.ui },
+})
+
+const applySessionSnapshot = (data: SessionData): Partial<SessionState> => ({
+  events: data.events.map(cloneJson),
+  messages: data.messages.map(cloneJson),
+  tools: cloneTools(data.tools),
+  toolOrder: [...data.toolOrder],
+  edits: data.edits.map(cloneJson),
+  checkpoints: data.checkpoints ? data.checkpoints.map(cloneJson) : [],
+  turns: data.turns.map(cloneJson),
+  currentTurnIndex: data.currentTurnIndex,
+  thinking: data.thinking ? { ...data.thinking } : undefined,
+  projectDir: data.projectDir,
+  permissions: {
+    pending: data.permissions.pending ? cloneJson(data.permissions.pending) : undefined,
+    decisions: data.permissions.decisions.map(cloneJson),
+  },
+  cost: { ...data.cost },
+  contextUsage: data.contextUsage ? { ...data.contextUsage } : undefined,
+  autoAccept: data.autoAccept,
+  selectedEditId: data.selectedEditId,
+  showTerminal: data.showTerminal,
+  isStreaming: data.isStreaming,
+  streamingStartTime: data.streamingStartTime,
+  streamingModel: data.streamingModel,
+  streamingMessageId: data.streamingMessageId,
+  pendingProjectDir: data.pendingProjectDir,
+  pendingCheckpointId: data.pendingCheckpointId,
+  fileTracker: {
+    originalContents: new Map(data.fileTracker.originalContents),
+    modifiedFiles: new Set(data.fileTracker.modifiedFiles),
+    isTracking: data.fileTracker.isTracking,
+  },
+  codexSelection: data.codexSelection
+    ? { ...data.codexSelection }
+    : { modelId: DEFAULT_MODEL_ID, modeId: DEFAULT_MODE_ID },
+  ui: { ...data.ui },
+})
+
+const createSessionData = (): SessionData => ({
+  events: [],
+  messages: [],
+  tools: {},
+  toolOrder: [],
+  edits: [],
+  checkpoints: [],
+  turns: [],
+  currentTurnIndex: -1,
+  thinking: undefined,
+  projectDir: undefined,
+  permissions: { decisions: [] },
+  cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
+  contextUsage: undefined,
+  autoAccept: false,
+  selectedEditId: undefined,
+  showTerminal: false,
+  isStreaming: false,
+  streamingStartTime: undefined,
+  streamingModel: undefined,
+  streamingMessageId: undefined,
+  pendingProjectDir: undefined,
+  pendingCheckpointId: undefined,
+  fileTracker: {
+    originalContents: new Map(),
+    modifiedFiles: new Set(),
+    isTracking: false,
+  },
+  codexSelection: {
+    modelId: DEFAULT_MODEL_ID,
+    modeId: DEFAULT_MODE_ID,
+  },
+  ui: { workbenchTab: 'diffs' },
+})
+
+const sessionSnapshots = new Map<string, SessionData>()
+
+const pendingSessionEvents = new Map<string, SessionEvent[]>()
+
+const cloneEvent = <T>(event: T): T => JSON.parse(JSON.stringify(event))
+
+export const queueSessionEvent = (sessionId: string, event: SessionEvent) => {
+  const queue = pendingSessionEvents.get(sessionId)
+  if (queue) {
+    queue.push(cloneEvent(event))
+  } else {
+    pendingSessionEvents.set(sessionId, [cloneEvent(event)])
+  }
+}
+
+const flushPendingEvents = (sessionId: string, push: (event: SessionEvent) => void) => {
+  const queue = pendingSessionEvents.get(sessionId)
+  if (!queue?.length) return
+  pendingSessionEvents.delete(sessionId)
+  queue.forEach((event) => push(cloneEvent(event)))
+}
+
+const deriveSessionName = (metas: Record<string, SessionMeta>, projectDir?: string) => {
+  const existingNames = new Set(Object.values(metas).map((meta) => meta.name))
+  if (projectDir && projectDir.trim().length) {
+    const base = projectDir.split(/\\|\//).filter(Boolean).pop() || 'Session'
+    let name = base
+    let counter = 2
+    while (existingNames.has(name)) {
+      name = `${base} (${counter++})`
+    }
+    return name
+  }
+  let index = existingNames.size + 1
+  let name = `Session ${index}`
+  while (existingNames.has(name)) {
+    index += 1
+    name = `Session ${index}`
+  }
+  return name
+}
+
+export type SessionState = {
+  sessionId: string
+  sessionOrder: string[]
+  sessionMeta: Record<string, SessionMeta>
+  events: SessionEvent[]
+  messages: MessageEvent[]
+  tools: Record<string, ToolRun>
+  toolOrder: string[]
+  edits: ProposedEdit[]
+  checkpoints?: CheckpointRecord[]
+  turns: TurnSnapshot[]
+  currentTurnIndex: number
+  thinking?: { text: string; done: boolean }
+  projectDir?: string
+  permissions: {
+    pending?: PermissionRequestEvent
+    decisions: PermissionDecisionEvent[]
+  }
+  cost: { usd: number; tokensIn: number; tokensOut: number }
+  contextUsage?: ContextUsageState
+  autoAccept: boolean
+  selectedEditId?: string
+  showTerminal: boolean
+  isStreaming: boolean
+  streamingStartTime?: number
+  streamingModel?: string
+  streamingMessageId?: string
+  pendingProjectDir?: string
+  pendingCheckpointId?: string
+  // File tracking for checkpoints
+  fileTracker: {
+    originalContents: Map<string, string>
+    modifiedFiles: Set<string>
+    isTracking: boolean
+  }
+  codexSelection: {
+    modelId: string
+    modeId: ModeOptionId
+  }
+  ui: {
+    workbenchTab: 'diffs' | 'checkpoints' | 'codex' | 'status'
+  }
+
+  createSession: (projectDir?: string, name?: string) => string
+  switchSession: (sessionId: string) => void
+  closeSession: (sessionId: string) => void
+  renameSession: (sessionId: string, name: string) => void
   pushEvent: (e: SessionEvent) => void
   setProjectDir: (dir?: string) => void
   setAutoAccept: (v: boolean) => void
+  setCodexSelection: (selection: Partial<{ modelId: string; modeId: ModeOptionId }>) => void
   acceptEdit: (id: string) => void
   rejectEdit: (id: string) => void
   selectEdit: (id?: string) => void
   resolvePermission: (allow: boolean, scope: 'once' | 'session' | 'project') => void
   setWorkbenchTab: (tab: 'diffs' | 'checkpoints' | 'codex') => void
   setShowTerminal: (show: boolean) => void
-  setStreaming: (streaming: boolean, model?: string) => void
+  setStreaming: (streaming: boolean, model?: string, messageId?: string) => void
   clearConversation: () => void
   loadPersistedSession: () => void
   clearSession: () => void
+  restoreTurn: (turnIndex: number) => Promise<void>
+  undoTurn: () => Promise<void>
+  redoTurn: () => Promise<void>
 }
 
 export const useSession = create<SessionState>((set, get) => {
-  // Don't load on initialization - wait for projectDir to be set
+  const initialId = createSessionId();
+  const initialMeta: SessionMeta = {
+    id: initialId,
+    name: 'Session 1',
+    projectDir: undefined,
+    createdAt: Date.now(),
+  };
+  const baseState = applySessionSnapshot(createSessionData());
+
   return {
-    events: [],
-    messages: [],
-    tools: {},
-    toolOrder: [],
-    edits: [],
-    checkpoints: [],
-    permissions: { decisions: [] },
-    cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
-    contextUsage: undefined,
-    autoAccept: false,
-    showTerminal: false,
-    isStreaming: false,
-    streamingMessageId: undefined,
-    pendingProjectDir: undefined,
-    fileTracker: {
-      originalContents: new Map(),
-      modifiedFiles: new Set(),
-      isTracking: false
+    sessionId: initialId,
+    sessionOrder: [initialId],
+    sessionMeta: { [initialId]: initialMeta },
+    ...baseState,
+    createSession: (projectDir?: string, name?: string) => {
+      const current = get();
+      sessionSnapshots.set(current.sessionId, captureSessionSnapshot(current));
+      const nextId = createSessionId();
+      const sessionName = name ?? deriveSessionName(current.sessionMeta, projectDir);
+      const meta: SessionMeta = {
+        id: nextId,
+        name: sessionName,
+        projectDir,
+        createdAt: Date.now(),
+      };
+      const data = createSessionData();
+      data.projectDir = projectDir;
+      set((state) => ({
+        sessionId: nextId,
+        sessionOrder: [...state.sessionOrder, nextId],
+        sessionMeta: { ...state.sessionMeta, [nextId]: meta },
+        ...applySessionSnapshot(data),
+      }));
+      sessionSnapshots.delete(nextId);
+      flushPendingEvents(nextId, get().pushEvent);
+      return nextId;
     },
-    ui: { workbenchTab: 'diffs' },
+    switchSession: (nextId: string) => {
+      const current = get();
+      if (current.sessionId === nextId) return;
+      sessionSnapshots.set(current.sessionId, captureSessionSnapshot(current));
+      const snapshot = sessionSnapshots.get(nextId) ?? createSessionData();
+      set((state) => ({
+        sessionId: nextId,
+        sessionOrder: state.sessionOrder.includes(nextId)
+          ? state.sessionOrder
+          : [...state.sessionOrder, nextId],
+        sessionMeta: {
+          ...state.sessionMeta,
+          [nextId]: {
+            ...(state.sessionMeta[nextId] ?? {
+              id: nextId,
+              name: deriveSessionName(state.sessionMeta, snapshot.projectDir),
+              createdAt: Date.now(),
+            }),
+            projectDir: snapshot.projectDir,
+          },
+        },
+        ...applySessionSnapshot(snapshot),
+      }));
+      sessionSnapshots.delete(nextId);
+      flushPendingEvents(nextId, get().pushEvent);
+    },
+    closeSession: (targetId: string) => {
+      const current = get();
+      if (!current.sessionOrder.includes(targetId)) return;
+      const remaining = current.sessionOrder.filter((id) => id !== targetId);
+      const updatedMeta = { ...current.sessionMeta };
+      delete updatedMeta[targetId];
+      sessionSnapshots.delete(targetId);
+
+      if (remaining.length === 0) {
+        const newId = createSessionId();
+        const meta: SessionMeta = {
+          id: newId,
+          name: 'Session 1',
+          projectDir: undefined,
+          createdAt: Date.now(),
+        };
+        const data = createSessionData();
+        set({
+          sessionId: newId,
+          sessionOrder: [newId],
+          sessionMeta: { [newId]: meta },
+          ...applySessionSnapshot(data),
+        });
+        return;
+      }
+
+      if (targetId === current.sessionId) {
+        const nextId = remaining[0];
+        const snapshot = sessionSnapshots.get(nextId) ?? createSessionData();
+        set({
+          sessionId: nextId,
+          sessionOrder: remaining,
+          sessionMeta: updatedMeta,
+          ...applySessionSnapshot(snapshot),
+        });
+      } else {
+        set({
+          sessionOrder: remaining,
+          sessionMeta: updatedMeta,
+        });
+      }
+    },
+    renameSession: (sessionId: string, name: string) => {
+      set((state) => ({
+        sessionMeta: {
+          ...state.sessionMeta,
+          [sessionId]: {
+            ...(state.sessionMeta[sessionId] ?? {
+              id: sessionId,
+              createdAt: Date.now(),
+            }),
+            name,
+          },
+        },
+      }));
+    },
 
   pushEvent: (e) => {
     const state = get()
-    
+
     // Global deduplication check for events with IDs (but be more conservative for messages)
     const hasId = 'id' in e && e.id
     if (hasId) {
@@ -273,7 +632,42 @@ export const useSession = create<SessionState>((set, get) => {
         return
       }
     }
-    
+
+    const appendTurnSnapshot = (
+      summary: string | undefined,
+      timestamp: number,
+      checkpointId?: string,
+      model?: string,
+      messageId?: string
+    ) => {
+      const trimmedSummary = summary ? summary.split('\n')[0]?.trim().slice(0, 160) : undefined
+      const turnId = messageId || `turn_${timestamp}`
+      set((prev) => {
+        const baseTurns = prev.currentTurnIndex >= 0 ? prev.turns.slice(0, prev.currentTurnIndex + 1) : []
+        const last = baseTurns[baseTurns.length - 1]
+        if (last && last.id === turnId && last.summary === trimmedSummary && last.checkpointId === checkpointId) {
+          const shouldClearPending = checkpointId && prev.pendingCheckpointId === checkpointId
+          return shouldClearPending ? { pendingCheckpointId: undefined } : {}
+        }
+
+        const snapshot: TurnSnapshot = {
+          id: turnId,
+          turn: baseTurns.length,
+          ts: timestamp,
+          summary: trimmedSummary && trimmedSummary.length > 0 ? trimmedSummary : undefined,
+          checkpointId,
+          tool: model,
+        }
+
+        const turns = [...baseTurns, snapshot]
+        return {
+          turns,
+          currentTurnIndex: turns.length - 1,
+          pendingCheckpointId: undefined,
+        }
+      })
+    }
+
     const sanitizeOutput = (text: string | undefined, model?: string) => {
       if (!text) return text
       const m = (model || '').toLowerCase()
@@ -313,7 +707,7 @@ export const useSession = create<SessionState>((set, get) => {
       Promise.resolve().then(() => {
         try {
           // @ts-ignore invoke available in Tauri env
-          return invoke('save_checkpoint_files', { checkpointId: id, files: snaps, trigger: e.trigger })
+          return invoke('save_checkpoint_files', { sessionId: state.sessionId, checkpointId: id, files: snaps, trigger: e.trigger })
         } catch {}
       }).catch(() => {})
 
@@ -324,11 +718,24 @@ export const useSession = create<SessionState>((set, get) => {
         fileCount: snaps.length
       }
       const existing = state.checkpoints || []
-      const nextCheckpoints = [rec, ...existing].slice(0, 100)
       const nextEvents = [...state.events, e]
-      set({
-        events: nextEvents.length > 50000 ? nextEvents.slice(-50000) : nextEvents,
-        checkpoints: nextCheckpoints,
+      set((prev) => {
+        const nextTurns = prev.turns.length
+          ? (() => {
+              const updated = [...prev.turns]
+              const lastIndex = updated.length - 1
+              if (lastIndex >= 0 && !updated[lastIndex].checkpointId) {
+                updated[lastIndex] = { ...updated[lastIndex], checkpointId: rec.id }
+              }
+              return updated
+            })()
+          : prev.turns
+        return {
+          events: nextEvents.length > 50000 ? nextEvents.slice(-50000) : nextEvents,
+          checkpoints: [rec, ...existing].slice(0, 100),
+          pendingCheckpointId: rec.id,
+          turns: nextTurns,
+        }
       })
       // Optionally surface the panel
       set((s) => ({ ui: { ...s.ui, workbenchTab: 'checkpoints' } }))
@@ -348,6 +755,8 @@ export const useSession = create<SessionState>((set, get) => {
       const streamId = state.streamingMessageId
       const targetId = streamId || incomingId
       let targetIndex = -1
+      const checkpointIdForTurn = get().pendingCheckpointId
+      const modelForTurn = state.streamingModel
       if (targetId) {
         for (let i = messages.length - 1; i >= 0; i--) {
           if (messages[i].role === 'assistant' && messages[i].id === targetId) { targetIndex = i; break }
@@ -397,7 +806,13 @@ export const useSession = create<SessionState>((set, get) => {
           events: nextEvents.length > 50000 ? nextEvents.slice(-50000) : nextEvents,
           messages: messages.length > 10000 ? messages.slice(-10000) : messages,
           streamingMessageId: undefined,
+          isStreaming: false,
+          streamingStartTime: undefined,
+          streamingModel: undefined,
         })
+        appendTurnSnapshot(finalText, updatedTs, checkpointIdForTurn, modelForTurn, finalId)
+        const updatedState = get()
+        sessionSnapshots.set(updatedState.sessionId, captureSessionSnapshot(updatedState))
         return
       }
       // Fallback: If we didn't find an exact id match, try to update the most recent
@@ -452,6 +867,7 @@ export const useSession = create<SessionState>((set, get) => {
             messages: messages.length > 10000 ? messages.slice(-10000) : messages,
             streamingMessageId: undefined,
           })
+          appendTurnSnapshot(finalText, updatedTs, checkpointIdForTurn, modelForTurn, finalId)
           return
         }
       }
@@ -492,6 +908,7 @@ export const useSession = create<SessionState>((set, get) => {
         messages: nextMessages.length > 10000 ? nextMessages.slice(-10000) : nextMessages,
         streamingMessageId: undefined,
       })
+      appendTurnSnapshot(msg.text, msg.ts, checkpointIdForTurn, model, msg.id)
       return
     }
     if (e.type === 'message') {
@@ -636,51 +1053,63 @@ export const useSession = create<SessionState>((set, get) => {
       return
     }
     if (e.type === 'assistant:delta') {
-      // SIMPLE APPROACH: Always update the last assistant message, never create new ones
+      const streamId = state.streamingMessageId
       const messages = [...state.messages]
-      
-      // Find the last assistant message
-      let lastAssistantIndex = -1
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'assistant') { 
-          lastAssistantIndex = i
-          break 
+
+      let targetIndex = -1
+      if (streamId) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'assistant' && messages[i].id === streamId) {
+            targetIndex = i
+            break
+          }
         }
       }
-      
-      if (lastAssistantIndex >= 0) {
-        // Update the existing assistant message
-        const lastMsg = messages[lastAssistantIndex]
-        const updatedMsg = { 
-          ...lastMsg, 
-          text: lastMsg.text + (sanitizeOutput(e.chunk, state.streamingModel) as string),
-          ts: Date.now()
+
+      if (targetIndex === -1) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'assistant') {
+            targetIndex = i
+            break
+          }
         }
-        messages[lastAssistantIndex] = updatedMsg
+      }
+
+      if (targetIndex >= 0 && streamId && messages[targetIndex].id !== streamId) {
+        targetIndex = -1
+      }
+
+      if (targetIndex >= 0) {
+        const lastMsg = messages[targetIndex]
+        const updatedMsg = {
+          ...lastMsg,
+          text: `${lastMsg.text}${sanitizeOutput(e.chunk, state.streamingModel) as string}`.trim(),
+          ts: Date.now(),
+        }
+        messages[targetIndex] = updatedMsg
         set({
           messages: messages.length > 10000 ? messages.slice(-10000) : messages,
         })
       } else {
-        // Only create a new assistant message if there are NO assistant messages at all
-        // This should only happen at the very start of a conversation
         let lastUserTs = 0
         for (let i = state.messages.length - 1; i >= 0; i--) {
           if (state.messages[i].role === 'user') { lastUserTs = state.messages[i].ts; break }
         }
-        
+
+        const id = streamId || `assistant-${Date.now()}`
         const msg: MessageEvent = {
-          id: String(Date.now()),
+          id,
           type: 'message',
           role: 'assistant',
           text: sanitizeOutput(e.chunk, state.streamingModel) as string,
           model: state.streamingModel,
           routingReason: undefined,
-          ts: Math.max(Date.now(), lastUserTs) + 1
+          ts: Math.max(Date.now(), lastUserTs) + 1,
         }
-        
+
         const nextMessages = [...state.messages, msg]
         set({
-          messages: nextMessages.length > 10000 ? nextMessages.slice(-10000) : nextMessages
+          messages: nextMessages.length > 10000 ? nextMessages.slice(-10000) : nextMessages,
         })
       }
       return
@@ -835,16 +1264,48 @@ export const useSession = create<SessionState>((set, get) => {
             let original = ''
             try { original = await readTextFile(filePath) } catch {}
             const id = `cp_${Date.now()}`
-            await invoke('save_checkpoint_files', { checkpointId: id, files: [{ path: filePath, original_content: original, current_content: original }], trigger: `${tool}:${filePath}` })
+            await invoke('save_checkpoint_files', { sessionId: state.sessionId, checkpointId: id, files: [{ path: filePath, original_content: original, current_content: original }], trigger: `${tool}:${filePath}` })
             const existing = get().checkpoints || []
             const rec = { id, ts: Date.now(), trigger: `${tool}:${filePath}`, fileCount: 1 }
-            set({ checkpoints: [rec, ...existing].slice(0, 100) })
+            set((prev) => {
+              const nextTurns = prev.turns.length
+                ? (() => {
+                    const updated = [...prev.turns]
+                    const lastIndex = updated.length - 1
+                    if (lastIndex >= 0 && !updated[lastIndex].checkpointId) {
+                      updated[lastIndex] = { ...updated[lastIndex], checkpointId: rec.id }
+                    }
+                    return updated
+                  })()
+                : prev.turns
+              return {
+                checkpoints: [rec, ...existing].slice(0, 100),
+                pendingCheckpointId: rec.id,
+                turns: nextTurns,
+              }
+            })
           } else if (destructiveBash && (window as any).__TAURI__) {
             const id = `cp_${Date.now()}`
-            await invoke('save_checkpoint_files', { checkpointId: id, files: [], trigger: `bash:${args.command || args.raw}` })
+            await invoke('save_checkpoint_files', { sessionId: state.sessionId, checkpointId: id, files: [], trigger: `bash:${args.command || args.raw}` })
             const existing = get().checkpoints || []
             const rec = { id, ts: Date.now(), trigger: `bash:${args.command || args.raw}`, fileCount: 0 }
-            set({ checkpoints: [rec, ...existing].slice(0, 100) })
+            set((prev) => {
+              const nextTurns = prev.turns.length
+                ? (() => {
+                    const updated = [...prev.turns]
+                    const lastIndex = updated.length - 1
+                    if (lastIndex >= 0 && !updated[lastIndex].checkpointId) {
+                      updated[lastIndex] = { ...updated[lastIndex], checkpointId: rec.id }
+                    }
+                    return updated
+                  })()
+                : prev.turns
+              return {
+                checkpoints: [rec, ...existing].slice(0, 100),
+                pendingCheckpointId: rec.id,
+                turns: nextTurns,
+              }
+            })
           }
         } catch {}
       })
@@ -941,7 +1402,7 @@ export const useSession = create<SessionState>((set, get) => {
           }
         })
         if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-          invoke('resolve_codex_permission', { requestId: e.id, allow: true, scope }).catch((err) => {
+          invoke('resolve_codex_permission', { sessionId: state.sessionId, requestId: e.id, allow: true, scope }).catch((err) => {
             console.error('Failed to auto-resolve Codex permission:', err)
           })
         }
@@ -1013,7 +1474,8 @@ export const useSession = create<SessionState>((set, get) => {
           e.contextRemainingTokens !== undefined ||
           e.contextUsedPct !== undefined ||
           e.contextRemainingPct !== undefined ||
-          e.tokenUsage !== undefined
+          e.tokenUsage !== undefined ||
+          e.rateLimits !== undefined
 
         if (!hasContextData) {
           return previousUsage
@@ -1027,6 +1489,7 @@ export const useSession = create<SessionState>((set, get) => {
           usedPct: e.contextUsedPct ?? previousUsage?.usedPct,
           remainingPct: e.contextRemainingPct ?? previousUsage?.remainingPct,
           tokenUsage: e.tokenUsage ?? previousUsage?.tokenUsage,
+          rateLimits: e.rateLimits ?? previousUsage?.rateLimits,
         }
       })()
 
@@ -1040,21 +1503,31 @@ export const useSession = create<SessionState>((set, get) => {
   },
 
   setProjectDir: (dir) => {
-    const currentDir = get().projectDir
+    const currentState = get()
+    const currentDir = currentState.projectDir
 
-    // INSTANT UI UPDATE - Don't block on file I/O
-    set({ projectDir: dir })
+    set((state) => ({
+      projectDir: dir,
+      sessionMeta: {
+        ...state.sessionMeta,
+        [state.sessionId]: {
+          ...(state.sessionMeta[state.sessionId] ?? {
+            id: state.sessionId,
+            name: deriveSessionName(state.sessionMeta, dir),
+            createdAt: Date.now(),
+          }),
+          projectDir: dir,
+        },
+      },
+    }))
 
-    // If switching to a different project, handle clearing/loading
     if (currentDir !== dir) {
       const state = get()
       if (state.isStreaming) {
-        // Defer full switch until streaming completes
         set({ pendingProjectDir: dir })
         return
       }
 
-      // Clear current conversation state immediately for instant UI update
       set({
         events: [],
         messages: [],
@@ -1065,10 +1538,9 @@ export const useSession = create<SessionState>((set, get) => {
         cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
         isStreaming: false,
         streamingStartTime: undefined,
-        streamingModel: undefined
+        streamingModel: undefined,
       })
 
-      // Load the new project's session asynchronously (non-blocking)
       if (dir) {
         Promise.resolve().then(() => {
           const persisted = loadSession(dir)
@@ -1079,7 +1551,7 @@ export const useSession = create<SessionState>((set, get) => {
               tools: persisted.tools || {},
               toolOrder: persisted.toolOrder || [],
               edits: persisted.edits || [],
-              cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 }
+              cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 },
             })
           }
         })
@@ -1088,6 +1560,14 @@ export const useSession = create<SessionState>((set, get) => {
   },
 
   setAutoAccept: (v) => set({ autoAccept: v }),
+
+  setCodexSelection: (selection) =>
+    set((state) => ({
+      codexSelection: {
+        modelId: selection.modelId ?? state.codexSelection.modelId,
+        modeId: selection.modeId ?? state.codexSelection.modeId,
+      },
+    })),
 
   acceptEdit: (id) => {
     const now = Date.now()
@@ -1106,7 +1586,8 @@ export const useSession = create<SessionState>((set, get) => {
     if (!pending) return
     get().pushEvent({ id: pending.id, type: 'permission:decision', allow, scope, ts: Date.now() })
     if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-      invoke('resolve_codex_permission', { requestId: pending.id, allow, scope })
+      const sessionId = get().sessionId
+      invoke('resolve_codex_permission', { sessionId: sessionId, requestId: pending.id, allow, scope })
         .catch((err) => console.error('Failed to resolve Codex permission:', err))
     }
   },
@@ -1115,65 +1596,42 @@ export const useSession = create<SessionState>((set, get) => {
   
   setShowTerminal: (show) => set({ showTerminal: show }),
   
-  setStreaming: (streaming, model) => {
-    const wasStreaming = get().isStreaming
-    set((state) => ({ 
-      isStreaming: streaming, 
-      streamingStartTime: streaming ? (state.isStreaming ? state.streamingStartTime : Date.now()) : undefined,
-      streamingModel: model,
-      streamingMessageId: streaming ? state.streamingMessageId : undefined
-    }))
-
-    // If a stream just ended and a project switch was queued, perform it now
-    if (wasStreaming && !streaming) {
-      const pending = get().pendingProjectDir
-      const current = get().projectDir
-      if (pending && pending !== current) {
-        // Apply the pending project switch now
-        set({ pendingProjectDir: undefined, projectDir: pending })
-
-        // Clear current conversation state for the new project
-        set({
-          events: [],
-          messages: [],
-          tools: {},
-          toolOrder: [],
-          edits: [],
-          thinking: undefined,
-          cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
-          contextUsage: undefined,
-          isStreaming: false,
-          streamingStartTime: undefined,
-          streamingModel: undefined
-        })
-
-        // Load the new project's session asynchronously and restart Codex
-        Promise.resolve().then(() => {
-          const persisted = loadSession(pending)
-          if (persisted.messages && persisted.messages.length > 0) {
-            set({
-              events: persisted.events || [],
-              messages: persisted.messages || [],
-              tools: persisted.tools || {},
-              toolOrder: persisted.toolOrder || [],
-              edits: persisted.edits || [],
-              cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 },
-              contextUsage: undefined,
-            })
-          }
-          if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-            invoke('restart_codex', { projectDir: pending }).catch(() => {})
-          }
-        })
-      }
+  setStreaming: (streaming, model, messageId) => {
+    const current = get()
+    const now = Date.now()
+    if (streaming) {
+      const startTime = current.isStreaming ? current.streamingStartTime ?? now : now
+      set({
+        isStreaming: true,
+        streamingStartTime: startTime,
+        streamingModel: model,
+        streamingMessageId: messageId || current.streamingMessageId,
+      })
+    } else {
+      set({
+        isStreaming: false,
+        streamingStartTime: undefined,
+        streamingModel: undefined,
+        streamingMessageId: undefined,
+      })
     }
+    sessionSnapshots.set(current.sessionId, captureSessionSnapshot(get()))
   },
   
   clearConversation: () => {
     const state = get()
     
     // Stop any streaming first
-    set({ isStreaming: false })
+    set((state) => {
+      const snapshot = captureSessionSnapshot({ ...state, isStreaming: false, streamingStartTime: undefined, streamingModel: undefined, streamingMessageId: undefined })
+      sessionSnapshots.set(state.sessionId, snapshot)
+      return {
+        isStreaming: false,
+        streamingStartTime: undefined,
+        streamingModel: undefined,
+        streamingMessageId: undefined
+      }
+    })
     
     // Stop Codex backend and restart it
     if (typeof window !== 'undefined' && (window as any).__TAURI__) {
@@ -1182,7 +1640,8 @@ export const useSession = create<SessionState>((set, get) => {
       // Stop Codex completely
       // Use atomic restart for better reliability
       if (projectDir) {
-        invoke('restart_codex', { projectDir }).then(() => {
+        console.log('[Session] restart_codex when clearing project', projectDir)
+        invoke('restart_codex', { sessionId: state.sessionId, projectDir: projectDir }).then(() => {
           // Clear all state after restart
           set({
             events: [],
@@ -1193,9 +1652,14 @@ export const useSession = create<SessionState>((set, get) => {
             thinking: undefined,
             cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
             contextUsage: undefined,
+            checkpoints: [],
+            turns: [],
+            currentTurnIndex: -1,
+            pendingCheckpointId: undefined,
             isStreaming: false,
             streamingStartTime: undefined,
-            streamingModel: undefined
+            streamingModel: undefined,
+            streamingMessageId: undefined,
           })
 
           // Clear persisted session
@@ -1204,7 +1668,7 @@ export const useSession = create<SessionState>((set, get) => {
           console.error('Failed to restart Codex:', err)
         })
       } else {
-        invoke('stop_codex').then(() => {
+        invoke('stop_codex', { sessionId: state.sessionId }).then(() => {
           set({
             events: [],
             messages: [],
@@ -1214,9 +1678,14 @@ export const useSession = create<SessionState>((set, get) => {
             thinking: undefined,
             cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
             contextUsage: undefined,
+            checkpoints: [],
+            turns: [],
+            currentTurnIndex: -1,
+            pendingCheckpointId: undefined,
             isStreaming: false,
             streamingStartTime: undefined,
-            streamingModel: undefined
+            streamingModel: undefined,
+            streamingMessageId: undefined,
           })
           clearSession(projectDir)
         }).catch((err) => {
@@ -1234,9 +1703,14 @@ export const useSession = create<SessionState>((set, get) => {
         thinking: undefined,
         cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
         contextUsage: undefined,
+        checkpoints: [],
+        turns: [],
+        currentTurnIndex: -1,
+        pendingCheckpointId: undefined,
         isStreaming: false,
         streamingStartTime: undefined,
-        streamingModel: undefined
+        streamingModel: undefined,
+        streamingMessageId: undefined,
       })
       clearSession(state.projectDir)
     }
@@ -1252,7 +1726,11 @@ export const useSession = create<SessionState>((set, get) => {
         tools: persisted.tools || {},
         toolOrder: persisted.toolOrder || [],
         edits: persisted.edits || [],
-        cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 }
+        cost: persisted.cost || { usd: 0, tokensIn: 0, tokensOut: 0 },
+        checkpoints: [],
+        turns: [],
+        currentTurnIndex: -1,
+        pendingCheckpointId: undefined,
       })
     }
   },
@@ -1270,10 +1748,15 @@ export const useSession = create<SessionState>((set, get) => {
       thinking: undefined,
       permissions: { decisions: [] },
       cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
+      checkpoints: [],
+      turns: [],
+      currentTurnIndex: -1,
+      pendingCheckpointId: undefined,
       autoAccept: false,
       isStreaming: false,
       streamingStartTime: undefined,
       streamingModel: undefined,
+      streamingMessageId: undefined,
       selectedEditId: undefined,
       fileTracker: {
         originalContents: new Map(),
@@ -1286,8 +1769,51 @@ export const useSession = create<SessionState>((set, get) => {
     if (state.projectDir) {
       clearSession(state.projectDir)
     }
+  },
+
+  restoreTurn: async (turnIndex: number) => {
+    const state = get()
+    if (turnIndex < 0 || turnIndex >= state.turns.length) return
+    const snapshot = state.turns[turnIndex]
+    if (!snapshot?.checkpointId) {
+      set({ currentTurnIndex: turnIndex })
+      return
+    }
+    if (typeof window !== 'undefined' && (window as any).__TAURI__) {
+      try {
+        await invoke('restore_checkpoint', { sessionId: state.sessionId, checkpointId: snapshot.checkpointId })
+      } catch (err) {
+        console.error('Failed to restore checkpoint', err)
+        return
+      }
+    }
+    set({ currentTurnIndex: turnIndex })
+    sessionSnapshots.set(state.sessionId, captureSessionSnapshot(get()))
+  },
+
+  undoTurn: async () => {
+    const state = get()
+    if (!state.turns.length) return
+    const startIndex = state.currentTurnIndex >= 0 ? state.currentTurnIndex : state.turns.length - 1
+    let idx = startIndex - 1
+    while (idx >= 0 && !state.turns[idx]?.checkpointId) {
+      idx -= 1
+    }
+    if (idx < 0) return
+    await get().restoreTurn(idx)
+  },
+
+  redoTurn: async () => {
+    const state = get()
+    if (!state.turns.length) return
+    let idx = state.currentTurnIndex + 1
+    while (idx < state.turns.length && !state.turns[idx]?.checkpointId) {
+      idx += 1
+    }
+    if (idx >= state.turns.length) return
+    await get().restoreTurn(idx)
   }
-  }
+  } as SessionState
 })
 
 // Make session store globally accessible

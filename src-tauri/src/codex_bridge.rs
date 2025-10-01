@@ -1,25 +1,12 @@
 use codex_protocol::config_types::{ReasoningEffort, ReasoningSummary};
 use codex_protocol::protocol::{
-    ApplyPatchApprovalRequestEvent,
-    AskForApproval,
-    Event,
-    EventMsg,
-    ExecApprovalRequestEvent,
-    ExecCommandBeginEvent,
-    ExecCommandEndEvent,
-    ExecCommandOutputDeltaEvent,
-    ExecOutputStream,
-    FileChange,
-    InputItem,
-    Op,
-    ReviewDecision,
-    SandboxPolicy,
-    Submission,
-    TokenCountEvent,
+    ApplyPatchApprovalRequestEvent, AskForApproval, Event, EventMsg, ExecApprovalRequestEvent,
+    ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecOutputStream,
+    FileChange, InputItem, Op, ReviewDecision, SandboxPolicy, Submission, TokenCountEvent,
     TokenUsage,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -86,18 +73,20 @@ pub struct CodexBridge {
     stdin: Option<ChildStdin>,
     app_handle: AppHandle,
     project_dir: PathBuf,
+    session_id: String,
     shared: SharedState,
     stdout_thread: Option<thread::JoinHandle<()>>,
     stderr_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl CodexBridge {
-    pub fn new(app_handle: AppHandle) -> Self {
+    pub fn new(app_handle: AppHandle, session_id: String) -> Self {
         Self {
             process: None,
             stdin: None,
             app_handle,
             project_dir: PathBuf::new(),
+            session_id,
             shared: SharedState {
                 session_model: Arc::new(Mutex::new(None)),
                 reasoning_buffers: Arc::new(Mutex::new(HashMap::new())),
@@ -133,12 +122,15 @@ impl CodexBridge {
         let shared = self.shared.clone();
         let app = self.app_handle.clone();
         let project_path = self.project_dir.clone();
+        let session_id = self.session_id.clone();
         let stdout_handle = thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(raw) => {
-                        if let Err(err) = handle_proto_line(&raw, &app, &shared, &project_path) {
+                        if let Err(err) =
+                            handle_proto_line(&raw, &app, &shared, &project_path, &session_id)
+                        {
                             eprintln!("[CodexBridge] Failed to process line: {}", err);
                         }
                     }
@@ -151,6 +143,7 @@ impl CodexBridge {
         });
 
         let err_app = self.app_handle.clone();
+        let err_session = self.session_id.clone();
         let stderr_handle = thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
@@ -160,6 +153,7 @@ impl CodexBridge {
                         "type": "stderr",
                         "message": l,
                         "ts": timestamp_ms(),
+                        "sessionId": err_session.clone(),
                     });
                     let _ = err_app.emit("codex:error", event);
                 }
@@ -196,7 +190,13 @@ impl CodexBridge {
             .codex_options
             .as_ref()
             .and_then(|opts| opts.show_reasoning)
-            .map(|flag| if flag { ReasoningSummary::Auto } else { ReasoningSummary::None })
+            .map(|flag| {
+                if flag {
+                    ReasoningSummary::Auto
+                } else {
+                    ReasoningSummary::None
+                }
+            })
             .unwrap_or(ReasoningSummary::Auto);
 
         let mut items: Vec<InputItem> = Vec::new();
@@ -241,16 +241,13 @@ impl CodexBridge {
             },
         };
 
-        let effort = payload
-            .effort
-            .as_deref()
-            .and_then(|level| match level {
-                "minimal" => Some(ReasoningEffort::Minimal),
-                "low" => Some(ReasoningEffort::Low),
-                "medium" => Some(ReasoningEffort::Medium),
-                "high" => Some(ReasoningEffort::High),
-                _ => None,
-            });
+        let effort = payload.effort.as_deref().and_then(|level| match level {
+            "minimal" => Some(ReasoningEffort::Minimal),
+            "low" => Some(ReasoningEffort::Low),
+            "medium" => Some(ReasoningEffort::Medium),
+            "high" => Some(ReasoningEffort::High),
+            _ => None,
+        });
 
         let submission = Submission {
             id: submission_id.clone(),
@@ -262,6 +259,7 @@ impl CodexBridge {
                 model,
                 effort,
                 summary: summary_pref,
+                final_output_json_schema: None,
             },
         };
 
@@ -359,7 +357,9 @@ impl CodexBridge {
                 return Ok((child, stdin));
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                eprintln!("[CodexBridge] codex binary not found in PATH, falling back to node runner");
+                eprintln!(
+                    "[CodexBridge] codex binary not found in PATH, falling back to node runner"
+                );
             }
             Err(err) => return Err(format!("Failed to spawn codex: {}", err)),
         }
@@ -408,16 +408,28 @@ fn handle_proto_line(
     app: &AppHandle,
     shared: &SharedState,
     project_dir: &Path,
+    session_id: &str,
 ) -> Result<(), String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Ok(());
     }
-    let event: Event = match serde_json::from_str(trimmed) {
-        Ok(ev) => ev,
+    let mut raw: Value = match serde_json::from_str(trimmed) {
+        Ok(val) => val,
         Err(err) => {
             eprintln!("[CodexBridge] Non-JSON proto line: {}", trimmed);
             return Err(err.to_string());
+        }
+    };
+
+    let event: Event = match serde_json::from_value(raw) {
+        Ok(ev) => ev,
+        Err(err) => {
+            eprintln!(
+                "[CodexBridge] Dropping event after normalization ({}): {}",
+                err, trimmed
+            );
+            return Ok(());
         }
     };
 
@@ -433,6 +445,7 @@ fn handle_proto_line(
                 "type": "model:update",
                 "model": cfg.model,
                 "ts": timestamp_ms(),
+                "sessionId": session_id,
             });
             let _ = app.emit("codex:stream", payload);
         }
@@ -442,6 +455,7 @@ fn handle_proto_line(
                 "chunk": delta.delta,
                 "id": submission_id,
                 "ts": timestamp_ms(),
+                "sessionId": session_id,
             });
             let _ = app.emit("codex:stream", payload);
         }
@@ -451,44 +465,45 @@ fn handle_proto_line(
                 "text": msg.message,
                 "id": submission_id,
                 "ts": timestamp_ms(),
+                "sessionId": session_id,
             });
             let _ = app.emit("codex:stream", payload);
         }
         EventMsg::AgentReasoningDelta(delta) => {
-            emit_reasoning_chunk(app, shared, &submission_id, &delta.delta, false);
+            emit_reasoning_chunk(app, shared, &submission_id, &delta.delta, false, session_id);
         }
         EventMsg::AgentReasoningRawContentDelta(delta) => {
-            emit_reasoning_chunk(app, shared, &submission_id, &delta.delta, false);
+            emit_reasoning_chunk(app, shared, &submission_id, &delta.delta, false, session_id);
         }
         EventMsg::AgentReasoning(reason) => {
-            emit_reasoning_chunk(app, shared, &submission_id, &reason.text, true);
+            emit_reasoning_chunk(app, shared, &submission_id, &reason.text, true, session_id);
         }
         EventMsg::AgentReasoningRawContent(reason) => {
-            emit_reasoning_chunk(app, shared, &submission_id, &reason.text, true);
+            emit_reasoning_chunk(app, shared, &submission_id, &reason.text, true, session_id);
         }
         EventMsg::AgentReasoningSectionBreak(_) => {
-            emit_reasoning_chunk(app, shared, &submission_id, "\n\n", false);
+            emit_reasoning_chunk(app, shared, &submission_id, "\n\n", false, session_id);
         }
         EventMsg::ExecCommandBegin(begin) => {
-            emit_exec_begin(app, &submission_id, &begin);
+            emit_exec_begin(app, &submission_id, &begin, session_id);
         }
         EventMsg::ExecCommandOutputDelta(delta) => {
-            emit_exec_output(app, delta);
+            emit_exec_output(app, delta, session_id);
         }
         EventMsg::ExecCommandEnd(end) => {
-            emit_exec_end(app, end);
+            emit_exec_end(app, end, session_id);
         }
         EventMsg::ExecApprovalRequest(req) => {
-            emit_exec_permission(app, shared, project_dir, &submission_id, &req);
+            emit_exec_permission(app, shared, project_dir, &submission_id, &req, session_id);
         }
         EventMsg::ApplyPatchApprovalRequest(req) => {
-            emit_patch_permission(app, shared, project_dir, &submission_id, &req);
+            emit_patch_permission(app, shared, project_dir, &submission_id, &req, session_id);
         }
         EventMsg::PatchApplyEnd(end) => {
-            handle_patch_apply_end(app, shared, end);
+            handle_patch_apply_end(app, shared, end, session_id);
         }
         EventMsg::TokenCount(data) => {
-            emit_token_stats(app, data);
+            emit_token_stats(app, data, session_id);
         }
         EventMsg::Error(err) => {
             let payload = json!({
@@ -496,6 +511,7 @@ fn handle_proto_line(
                 "text": format!("⚠️ {}", err.message),
                 "id": submission_id,
                 "ts": timestamp_ms(),
+                "sessionId": session_id,
             });
             let _ = app.emit("codex:stream", payload);
         }
@@ -506,6 +522,7 @@ fn handle_proto_line(
                     "text": last,
                     "id": submission_id,
                     "ts": timestamp_ms(),
+                    "sessionId": session_id,
                 });
                 let _ = app.emit("codex:stream", payload);
             }
@@ -518,6 +535,7 @@ fn handle_proto_line(
                     "event": other,
                 }),
                 "ts": timestamp_ms(),
+                "sessionId": session_id,
             });
             let _ = app.emit("codex:stream", payload);
         }
@@ -526,7 +544,14 @@ fn handle_proto_line(
     Ok(())
 }
 
-fn emit_reasoning_chunk(app: &AppHandle, shared: &SharedState, id: &str, chunk: &str, done: bool) {
+fn emit_reasoning_chunk(
+    app: &AppHandle,
+    shared: &SharedState,
+    id: &str,
+    chunk: &str,
+    done: bool,
+    session_id: &str,
+) {
     let (sequence, full_text) = {
         let mut buffers = shared.reasoning_buffers.lock().unwrap();
         let entry = buffers.entry(id.to_string()).or_default();
@@ -549,11 +574,17 @@ fn emit_reasoning_chunk(app: &AppHandle, shared: &SharedState, id: &str, chunk: 
         "fullText": full_text,
         "done": done,
         "ts": timestamp_ms(),
+        "sessionId": session_id,
     });
     let _ = app.emit("codex:stream", payload);
 }
 
-fn emit_exec_begin(app: &AppHandle, submission_id: &str, begin: &ExecCommandBeginEvent) {
+fn emit_exec_begin(
+    app: &AppHandle,
+    submission_id: &str,
+    begin: &ExecCommandBeginEvent,
+    session_id: &str,
+) {
     let command = shlex::try_join(begin.command.iter().map(|s| s.as_str()))
         .unwrap_or_else(|_| begin.command.join(" "));
     let cwd = begin.cwd.to_string_lossy().to_string();
@@ -567,11 +598,12 @@ fn emit_exec_begin(app: &AppHandle, submission_id: &str, begin: &ExecCommandBegi
             "submissionId": submission_id,
         },
         "ts": timestamp_ms(),
+        "sessionId": session_id,
     });
     let _ = app.emit("codex:stream", payload);
 }
 
-fn emit_exec_output(app: &AppHandle, delta: ExecCommandOutputDeltaEvent) {
+fn emit_exec_output(app: &AppHandle, delta: ExecCommandOutputDeltaEvent, session_id: &str) {
     let chunk = String::from_utf8_lossy(&delta.chunk).to_string();
     let stream = match delta.stream {
         ExecOutputStream::Stdout => "stdout",
@@ -583,11 +615,12 @@ fn emit_exec_output(app: &AppHandle, delta: ExecCommandOutputDeltaEvent) {
         "chunk": chunk,
         "stream": stream,
         "ts": timestamp_ms(),
+        "sessionId": session_id,
     });
     let _ = app.emit("codex:stream", payload);
 }
 
-fn emit_exec_end(app: &AppHandle, end: ExecCommandEndEvent) {
+fn emit_exec_end(app: &AppHandle, end: ExecCommandEndEvent, session_id: &str) {
     let mut chunk = if !end.formatted_output.is_empty() {
         end.formatted_output
     } else if !end.aggregated_output.is_empty() {
@@ -607,6 +640,7 @@ fn emit_exec_end(app: &AppHandle, end: ExecCommandEndEvent) {
         "done": true,
         "exitCode": end.exit_code,
         "ts": timestamp_ms(),
+        "sessionId": session_id,
     });
     let _ = app.emit("codex:stream", payload);
 }
@@ -617,19 +651,16 @@ fn emit_exec_permission(
     project_dir: &Path,
     submission_id: &str,
     req: &ExecApprovalRequestEvent,
+    session_id: &str,
 ) {
     let permission_id = format!("exec:{}:{}", submission_id, req.call_id);
-    shared
-        .pending_permissions
-        .lock()
-        .unwrap()
-        .insert(
-            permission_id.clone(),
-            PermissionContext {
-                submission_id: submission_id.to_string(),
-                kind: PermissionKind::Exec,
-            },
-        );
+    shared.pending_permissions.lock().unwrap().insert(
+        permission_id.clone(),
+        PermissionContext {
+            submission_id: submission_id.to_string(),
+            kind: PermissionKind::Exec,
+        },
+    );
 
     let command = shlex::try_join(req.command.iter().map(|s| s.as_str()))
         .unwrap_or_else(|_| req.command.join(" "));
@@ -639,6 +670,7 @@ fn emit_exec_permission(
         "tools": ["bash"],
         "scope": "session",
         "ts": timestamp_ms(),
+        "sessionId": session_id,
         "details": {
             "command": command,
             "cwd": format_path(&req.cwd, project_dir),
@@ -654,19 +686,16 @@ fn emit_patch_permission(
     project_dir: &Path,
     submission_id: &str,
     req: &ApplyPatchApprovalRequestEvent,
+    session_id: &str,
 ) {
     let permission_id = format!("patch:{}:{}", submission_id, req.call_id);
-    shared
-        .pending_permissions
-        .lock()
-        .unwrap()
-        .insert(
-            permission_id.clone(),
-            PermissionContext {
-                submission_id: submission_id.to_string(),
-                kind: PermissionKind::Patch,
-            },
-        );
+    shared.pending_permissions.lock().unwrap().insert(
+        permission_id.clone(),
+        PermissionContext {
+            submission_id: submission_id.to_string(),
+            kind: PermissionKind::Patch,
+        },
+    );
 
     let mut edit_ids = Vec::new();
     for (path, change) in &req.changes {
@@ -685,6 +714,7 @@ fn emit_patch_permission(
             "before": before,
             "after": after,
             "ts": timestamp_ms(),
+            "sessionId": session_id,
         });
         let _ = app.emit("codex:stream", payload);
     }
@@ -706,6 +736,7 @@ fn emit_patch_permission(
         "tools": ["write"],
         "scope": "session",
         "ts": timestamp_ms(),
+        "sessionId": session_id,
         "details": {
             "files": affected,
             "reason": req.reason.clone(),
@@ -722,6 +753,7 @@ fn handle_patch_apply_end(
     app: &AppHandle,
     shared: &SharedState,
     end: codex_protocol::protocol::PatchApplyEndEvent,
+    session_id: &str,
 ) {
     let ids = shared
         .pending_edits
@@ -730,17 +762,22 @@ fn handle_patch_apply_end(
         .remove(&end.call_id)
         .unwrap_or_default();
     for edit_id in ids {
-        let event_type = if end.success { "edit:applied" } else { "edit:rejected" };
+        let event_type = if end.success {
+            "edit:applied"
+        } else {
+            "edit:rejected"
+        };
         let payload = json!({
             "type": event_type,
             "id": edit_id,
             "ts": timestamp_ms(),
+            "sessionId": session_id,
         });
         let _ = app.emit("codex:stream", payload);
     }
 }
 
-fn emit_token_stats(app: &AppHandle, data: TokenCountEvent) {
+fn emit_token_stats(app: &AppHandle, data: TokenCountEvent, session_id: &str) {
     if let Some(info) = data.info {
         let last_usage = info.last_token_usage.clone();
         let tokens_in = last_usage.input_tokens + last_usage.cached_input_tokens;
@@ -751,6 +788,45 @@ fn emit_token_stats(app: &AppHandle, data: TokenCountEvent) {
             context_window
                 .map(|window| compute_context_usage(&last_usage, window))
                 .unwrap_or((None, None, None, None, None));
+
+        let rate_limits_payload = data.rate_limits.as_ref().map(|limits| {
+            let format_window =
+                |window: &codex_protocol::protocol::RateLimitWindow| -> serde_json::Value {
+                    json!({
+                        "usedPercent": window.used_percent,
+                        "windowMinutes": window.window_minutes,
+                        "resetsInSeconds": window.resets_in_seconds,
+                    })
+                };
+
+            let primary = limits.primary.as_ref().map(|window| format_window(window));
+            let secondary = limits
+                .secondary
+                .as_ref()
+                .map(|window| format_window(window));
+
+            let ratio = match (
+                limits
+                    .primary
+                    .as_ref()
+                    .and_then(|window| window.window_minutes),
+                limits
+                    .secondary
+                    .as_ref()
+                    .and_then(|window| window.window_minutes),
+            ) {
+                (Some(primary_minutes), Some(secondary_minutes)) if secondary_minutes > 0 => Some(
+                    ((primary_minutes as f64 / secondary_minutes as f64) * 100.0).clamp(0.0, 100.0),
+                ),
+                _ => None,
+            };
+
+            json!({
+                "primary": primary,
+                "secondary": secondary,
+                "primaryToSecondaryRatio": ratio,
+            })
+        });
 
         let payload = json!({
             "type": "telemetry:tokens",
@@ -769,7 +845,9 @@ fn emit_token_stats(app: &AppHandle, data: TokenCountEvent) {
             "contextRemainingTokens": remaining_tokens,
             "contextUsedPct": used_pct,
             "contextRemainingPct": remaining_pct,
+            "rateLimits": rate_limits_payload,
             "ts": timestamp_ms(),
+            "sessionId": session_id,
         });
         let _ = app.emit("codex:stream", payload);
     }
@@ -778,7 +856,13 @@ fn emit_token_stats(app: &AppHandle, data: TokenCountEvent) {
 fn compute_context_usage(
     usage: &TokenUsage,
     context_window: u64,
-) -> (Option<u64>, Option<u64>, Option<u64>, Option<f64>, Option<f64>) {
+) -> (
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<f64>,
+    Option<f64>,
+) {
     const BASELINE_TOKENS: u64 = 12_000;
 
     if context_window <= BASELINE_TOKENS {

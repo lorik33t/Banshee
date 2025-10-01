@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 function renderTreeStructure(content: string) {
   const lines = content.split('\n')
@@ -65,6 +67,21 @@ interface CodexSection {
 export function StructuredMessage({ content }: StructuredMessageProps) {
   const sections = useMemo(() => parseCodexOutput(content), [content])
 
+  const renderMarkdown = (source: string) => {
+    const html = marked.parse(source, { async: false }) as string
+    return DOMPurify.sanitize(html)
+  }
+
+  const cleanAnsi = (text: string) => {
+    return text
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\[[0-9;]*m/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+      .replace(/\u001b\[K/g, '')
+      .replace(/\r/g, '')
+  }
+
   return (
     <div className="structured-message">
       {sections.map((section, index) => (
@@ -93,7 +110,10 @@ export function StructuredMessage({ content }: StructuredMessageProps) {
                 {renderTreeStructure(section.content)}
               </div>
             ) : (
-              <pre>{section.content}</pre>
+              <div
+                className="codex-markdown"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(cleanAnsi(section.content)) }}
+              />
             )}
           </div>
         </div>
@@ -183,4 +203,3 @@ function parseCodexOutput(content: string): CodexSection[] {
 
   return sections
 }
-

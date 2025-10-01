@@ -142,8 +142,6 @@ impl ModelHandler for NodeModelHandler {
     }
 }
 
-static PROJECT_DIR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-static CODEX: Lazy<Mutex<Option<CodexBridge>>> = Lazy::new(|| Mutex::new(None));
 static TERMINAL_MANAGER: Lazy<TerminalManager> = Lazy::new(|| TerminalManager::new());
 static LSP_MANAGER: Lazy<LspManager> = Lazy::new(|| LspManager::new());
 // Registry of model handlers
@@ -159,6 +157,37 @@ static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send + 
         );
         Mutex::new(m)
     });
+
+struct SessionRuntime {
+    project_dir: String,
+    codex: Option<CodexBridge>,
+    terminal_id: Option<String>,
+}
+
+impl SessionRuntime {
+    fn new(project_dir: String) -> Self {
+        Self {
+            project_dir,
+            codex: None,
+            terminal_id: None,
+        }
+    }
+}
+
+static SESSION_MANAGER: Lazy<Mutex<HashMap<String, SessionRuntime>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn get_session_project_dir(session_id: &str) -> Option<String> {
+    SESSION_MANAGER
+        .lock()
+        .ok()
+        .and_then(|sessions| sessions.get(session_id).map(|s| s.project_dir.clone()))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
+}
 
 #[derive(serde::Deserialize)]
 struct CloneArgs {
@@ -194,39 +223,91 @@ async fn clone_repo(args: CloneArgs) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn start_codex(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
-    {
-        let mut dir_guard = PROJECT_DIR.lock().unwrap();
-        *dir_guard = project_dir.clone();
+fn start_codex(
+    app: tauri::AppHandle,
+    session_id: String,
+    project_dir: String,
+) -> Result<(), String> {
+    let resolved_dir = if project_dir.trim().is_empty() {
+        std::env::current_dir().map_err(|e| format!("Failed to resolve current dir: {}", e))?
+    } else {
+        PathBuf::from(&project_dir)
+    };
+    let resolved_str = resolved_dir
+        .canonicalize()
+        .unwrap_or_else(|_| resolved_dir.clone())
+        .to_string_lossy()
+        .to_string();
+
+    eprintln!(
+        "[start_codex] session={} incoming={} resolved={}",
+        session_id, project_dir, resolved_str
+    );
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    let entry = sessions
+        .entry(session_id.clone())
+        .or_insert_with(|| SessionRuntime::new(resolved_str.clone()));
+
+    // If Codex is already running for this session and the project path is unchanged,
+    // treat this as an idempotent call and return early to avoid thrashing the process.
+    let already_running_same_dir =
+        entry.codex.as_ref().is_some() && entry.project_dir == resolved_str;
+    entry.project_dir = resolved_str.clone();
+
+    if already_running_same_dir {
+        return Ok(());
     }
 
-    let mut guard = CODEX.lock().unwrap();
-    if let Some(mut bridge) = guard.take() {
+    if let Some(mut bridge) = entry.codex.take() {
         let _ = bridge.stop();
     }
 
-    let mut bridge = CodexBridge::new(app);
-    bridge.start(&project_dir)?;
-    *guard = Some(bridge);
+    let mut bridge = CodexBridge::new(app, session_id.clone());
+    bridge.start(&resolved_str)?;
+    entry.codex = Some(bridge);
 
     Ok(())
 }
 
 #[tauri::command]
-fn send_to_codex(_app: tauri::AppHandle, input: String) -> Result<(), String> {
-    let mut bridge_guard = CODEX.lock().unwrap();
-    if let Some(bridge) = bridge_guard.as_mut() {
-        bridge.send_message(&input)?;
-        Ok(())
-    } else {
-        Err("Codex bridge not initialized. Please ensure a project is open.".into())
+fn send_to_codex(app: tauri::AppHandle, session_id: String, input: String) -> Result<(), String> {
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    let entry = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "Codex session not initialized".to_string())?;
+
+    if entry.codex.is_none() {
+        let mut bridge = CodexBridge::new(app.clone(), session_id.clone());
+        bridge.start(&entry.project_dir)?;
+        entry.codex = Some(bridge);
     }
+
+    let result = entry
+        .codex
+        .as_mut()
+        .ok_or_else(|| "Codex session not initialized".to_string())?
+        .send_message(&input);
+    if let Err(err) = &result {
+        eprintln!(
+            "[send_to_codex] session={} project={} error={}",
+            session_id, entry.project_dir, err
+        );
+    } else {
+        eprintln!(
+            "[send_to_codex] session={} project={} ok",
+            session_id, entry.project_dir
+        );
+    }
+    result
 }
 
 #[tauri::command]
-fn interrupt_codex() -> Result<(), String> {
-    let mut guard = CODEX.lock().unwrap();
-    if let Some(bridge) = guard.as_mut() {
+fn interrupt_codex(session_id: String) -> Result<(), String> {
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    let entry = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "Codex session not initialized".to_string())?;
+    if let Some(bridge) = entry.codex.as_mut() {
         bridge.interrupt()
     } else {
         Err("Codex bridge not initialized. Please ensure a project is open.".into())
@@ -234,9 +315,17 @@ fn interrupt_codex() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn resolve_codex_permission(request_id: String, allow: bool, scope: String) -> Result<(), String> {
-    let mut bridge_guard = CODEX.lock().unwrap();
-    if let Some(bridge) = bridge_guard.as_mut() {
+fn resolve_codex_permission(
+    session_id: String,
+    request_id: String,
+    allow: bool,
+    scope: String,
+) -> Result<(), String> {
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    let entry = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "Codex session not initialized".to_string())?;
+    if let Some(bridge) = entry.codex.as_mut() {
         bridge.resolve_permission(&request_id, allow, &scope)
     } else {
         Err("Codex bridge not initialized. Please ensure a project is open.".into())
@@ -244,18 +333,37 @@ fn resolve_codex_permission(request_id: String, allow: bool, scope: String) -> R
 }
 
 #[tauri::command]
-fn restart_codex(app: tauri::AppHandle, project_dir: String) -> Result<(), String> {
-    stop_codex()?;
-    start_codex(app, project_dir)
+fn restart_codex(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    let project_dir = {
+        let sessions = SESSION_MANAGER.lock().unwrap();
+        let entry = sessions
+            .get(&session_id)
+            .ok_or_else(|| "Codex session not initialized".to_string())?;
+        entry.project_dir.clone()
+    };
+
+    stop_codex(session_id.clone())?;
+    start_codex(app, session_id, project_dir)
 }
 
 #[tauri::command]
-fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<(), String> {
+fn send_to_model(
+    app: tauri::AppHandle,
+    session_id: String,
+    input: String,
+    model: String,
+) -> Result<(), String> {
     let model = model.to_lowercase();
     eprintln!("[RUST] send_to_model called with model: {}", model);
     eprintln!("[RUST] Input length: {}", input.len());
 
-    let project_dir = PROJECT_DIR.lock().unwrap().clone();
+    let project_dir = {
+        let sessions = SESSION_MANAGER.lock().unwrap();
+        let entry = sessions
+            .get(&session_id)
+            .ok_or_else(|| "Codex session not initialized".to_string())?;
+        entry.project_dir.clone()
+    };
     if project_dir.is_empty() {
         eprintln!("[RUST] Error: Project directory not set");
         return Err("Project directory not set.".into());
@@ -273,7 +381,7 @@ fn send_to_model(app: tauri::AppHandle, input: String, model: String) -> Result<
 }
 
 #[tauri::command]
-fn stop_codex() -> Result<(), String> {
+fn stop_codex(session_id: String) -> Result<(), String> {
     {
         let mut registry = MODEL_HANDLERS.lock().unwrap();
         for handler in registry.values_mut() {
@@ -281,13 +389,19 @@ fn stop_codex() -> Result<(), String> {
         }
     }
 
-    let mut guard = CODEX.lock().unwrap();
-    if let Some(mut bridge) = guard.take() {
-        let _ = bridge.stop();
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    if let Some(runtime) = sessions.get_mut(&session_id) {
+        // Close terminal if exists
+        if let Some(term_id) = runtime.terminal_id.take() {
+            let _ = TERMINAL_MANAGER.close_terminal(&term_id);
+        }
+
+        // Stop codex bridge
+        if let Some(mut bridge) = runtime.codex.take() {
+            let _ = bridge.stop();
+        }
     }
 
-    let mut dir_guard = PROJECT_DIR.lock().unwrap();
-    dir_guard.clear();
     Ok(())
 }
 
@@ -400,8 +514,14 @@ async fn run_command(command: String, cwd: Option<String>) -> Result<CommandResu
 }
 
 #[tauri::command]
-async fn execute_command(command: String) -> Result<String, String> {
-    let project_dir = PROJECT_DIR.lock().unwrap().clone();
+async fn execute_command(session_id: String, command: String) -> Result<String, String> {
+    let project_dir = {
+        let sessions = SESSION_MANAGER.lock().unwrap();
+        sessions
+            .get(&session_id)
+            .map(|s| s.project_dir.clone())
+            .unwrap_or_default()
+    };
 
     let working_dir = if project_dir.is_empty() {
         String::from(".")
@@ -434,8 +554,42 @@ async fn execute_command(command: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn create_terminal(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    TERMINAL_MANAGER.create_terminal(id, app)
+fn create_terminal(
+    app: tauri::AppHandle,
+    session_id: String,
+    id: String,
+    working_dir: Option<String>,
+) -> Result<(), String> {
+    let working_dir = {
+        let mut sessions = SESSION_MANAGER.lock().unwrap();
+        let runtime = sessions.get_mut(&session_id);
+
+        let provided_dir = working_dir
+            .as_ref()
+            .map(|dir| dir.trim())
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| dir.to_string());
+
+        if let Some(runtime) = runtime {
+            runtime.terminal_id = Some(id.clone());
+
+            match provided_dir {
+                Some(dir) => Some(dir),
+                None => {
+                    let trimmed = runtime.project_dir.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                }
+            }
+        } else {
+            provided_dir
+        }
+    };
+
+    TERMINAL_MANAGER.create_terminal(id, app, working_dir)
 }
 
 #[tauri::command]
@@ -449,8 +603,24 @@ fn resize_terminal(id: String, rows: u16, cols: u16) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn close_terminal(id: String) -> Result<(), String> {
+fn close_terminal(session_id: String, id: String) -> Result<(), String> {
+    // Clear terminal ID from session
+    let mut sessions = SESSION_MANAGER.lock().unwrap();
+    if let Some(runtime) = sessions.get_mut(&session_id) {
+        if runtime.terminal_id.as_ref() == Some(&id) {
+            runtime.terminal_id = None;
+        }
+    }
+
     TERMINAL_MANAGER.close_terminal(&id)
+}
+
+#[tauri::command]
+fn get_session_terminal_id(session_id: String) -> Result<Option<String>, String> {
+    let sessions = SESSION_MANAGER.lock().unwrap();
+    Ok(sessions
+        .get(&session_id)
+        .and_then(|s| s.terminal_id.clone()))
 }
 
 #[derive(serde::Deserialize)]
@@ -657,6 +827,7 @@ pub fn run() {
             write_to_terminal,
             resize_terminal,
             close_terminal,
+            get_session_terminal_id,
             lsp_proxy,
             save_terminal_session,
             load_terminal_session,

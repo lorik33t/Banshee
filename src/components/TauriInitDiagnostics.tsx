@@ -62,27 +62,9 @@ export function TauriInitDiagnostics() {
   }, [])
   
   if (!isVisible) {
-    return (
-      <button
-        onClick={() => setIsVisible(true)}
-        style={{
-          position: 'fixed',
-          bottom: '10px',
-          right: '10px',
-          padding: '5px 10px',
-          fontSize: '11px',
-          backgroundColor: 'var(--bg-tertiary)',
-          border: '1px solid var(--border-primary)',
-          borderRadius: '4px',
-          cursor: 'pointer',
-          zIndex: 9999
-        }}
-      >
-        Show Init Diagnostics
-      </button>
-    )
+    return null
   }
-  
+
   return (
     <div style={{
       position: 'fixed',

@@ -8,9 +8,12 @@ import type { MessageEvent } from '../state/session'
 interface MessageProps {
   message: MessageEvent
   isStreaming?: boolean
+  checkpointId?: string
+  turnIndex?: number
+  onRestoreTurn?: (turnIndex: number) => void
 }
 
-export function Message({ message, isStreaming = false }: MessageProps) {
+export function Message({ message, isStreaming = false, checkpointId, turnIndex, onRestoreTurn }: MessageProps) {
   const isAssistant = message.role === 'assistant'
   const [copied, setCopied] = useState(false)
   
@@ -155,6 +158,16 @@ export function Message({ message, isStreaming = false }: MessageProps) {
                     useSession.getState().setWorkbenchTab('diffs')
                   })
                 }}>Open in Diffs</button>
+              )}
+              {checkpointId && typeof turnIndex === 'number' && onRestoreTurn && (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    className="message-restore-btn"
+                    onClick={() => onRestoreTurn(turnIndex)}
+                  >
+                    Restore checkpoint
+                  </button>
+                </div>
               )}
             </>
           )}

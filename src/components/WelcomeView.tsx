@@ -1,10 +1,8 @@
-import { FolderOpen, GitBranch, Clock, Sparkles, Play } from 'lucide-react'
+import { FolderOpen, GitBranch, Play } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import { useWorkspaceStore } from '../state/workspace'
 import { useState, useEffect } from 'react'
 
 export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) => void }) {
-  const { recentProjects } = useWorkspaceStore()
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState<string | null>(null)
   const [showClonePanel, setShowClonePanel] = useState(false)
@@ -23,9 +21,10 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
   }, [cloning])
 
   // No omnibar; actions are presented as simple tiles
+  const hasTauri = typeof window !== 'undefined' && Boolean((window as { __TAURI__?: unknown }).__TAURI__)
 
   const openFolder = async () => {
-    if (!(window as any).__TAURI__) return
+    if (!hasTauri) return
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const selected = await open({
@@ -45,17 +44,15 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
     }
   }
 
-  const openRecent = (path: string) => {
-    onProjectOpen(path)
-  }
-
   const browseDest = async () => {
-    if (!(window as any).__TAURI__) return
+    if (!hasTauri) return
     try {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const parent = await open({ directory: true, multiple: false, title: 'Choose destination folder' })
       if (parent && typeof parent === 'string') setDestParent(parent)
-    } catch (e) { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   const startClone = async () => {
@@ -97,9 +94,7 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
     <div className="welcome-view">
       <div className="welcome-content">
         <div className="welcome-header">
-          <Sparkles size={48} className="welcome-icon" />
-          <h1>Welcome to Banshee</h1>
-          <p>Run, orchestrate, and observe CLI agents across providers</p>
+          <h1>Banshee</h1>
         </div>
 
         {/* No omnibar – simplified start menu */}
@@ -109,21 +104,18 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
             <Play size={18} />
             <div className="action-meta">
               <div className="label">Start New Session</div>
-              <div className="hint">S</div>
             </div>
           </button>
           <button className="action-tile" onClick={openFolder}>
             <FolderOpen size={18} />
             <div className="action-meta">
               <div className="label">Open Folder</div>
-              <div className="hint">O</div>
             </div>
           </button>
           <button className="action-tile" onClick={() => setShowClonePanel(true)} disabled={cloning} aria-busy={cloning}>
             <GitBranch size={18} />
             <div className="action-meta">
               <div className="label">Clone Repository</div>
-              <div className="hint">G</div>
             </div>
           </button>
         </div>
@@ -190,35 +182,6 @@ export function WelcomeView({ onProjectOpen }: { onProjectOpen: (path: string) =
           </>
         )}
 
-        {recentProjects.length > 0 && (
-          <div className="recent-projects">
-            <h3>
-              <Clock size={16} />
-              Recent Projects
-            </h3>
-            <div className="recent-list">
-              {recentProjects.slice(0, 5).map((project) => (
-                <button
-                  key={project.id}
-                  className="recent-item"
-                  onClick={() => openRecent(project.path)}
-                  title={project.path}
-                >
-                  <FolderOpen size={16} />
-                  <div className="recent-info">
-                    <div className="recent-name">{project.name}</div>
-                    <div className="recent-path">{project.path}</div>
-                  </div>
-                  {project.lastOpened && (
-                    <div className="recent-time">
-                      {new Date(project.lastOpened).toLocaleDateString()}
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

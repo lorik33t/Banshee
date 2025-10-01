@@ -5,8 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::command;
 
-// Use the project directory stored in lib.rs
-use crate::PROJECT_DIR;
+use crate::get_session_project_dir;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileSnapshot {
@@ -28,44 +27,72 @@ pub struct CheckpointMetadata {
     pub git_commit: Option<String>,
 }
 
-// Get the checkpoints directory
-fn get_checkpoints_dir() -> PathBuf {
-    let project_dir = PROJECT_DIR.lock().unwrap().clone();
-    let base = if project_dir.is_empty() {
-        ".".into()
-    } else {
-        PathBuf::from(project_dir)
-    };
-    let path = base
-        .join(".conductor")
-        .join("hartford")
-        .join(".checkpoints");
-    if !path.exists() {
-        if let Err(e) = fs::create_dir_all(&path) {
-            eprintln!("Failed to create checkpoints directory: {}", e);
+fn project_root_for(session_id: &str) -> Result<PathBuf, String> {
+    match get_session_project_dir(session_id) {
+        Some(dir) => {
+            let trimmed = dir.trim();
+            if trimmed.is_empty() {
+                std::env::current_dir().map_err(|e| format!("Failed to resolve current dir: {}", e))
+            } else {
+                Ok(PathBuf::from(trimmed))
+            }
+        }
+        None => {
+            std::env::current_dir().map_err(|e| format!("Failed to resolve current dir: {}", e))
         }
     }
-    path
 }
 
-// Get checkpoint-specific directory
-fn get_checkpoint_dir(checkpoint_id: &str) -> PathBuf {
-    get_checkpoints_dir().join(checkpoint_id)
+fn checkpoints_dir(session_id: &str) -> Result<PathBuf, String> {
+    let base = project_root_for(session_id)?;
+    Ok(base
+        .join(".conductor")
+        .join("hartford")
+        .join(".checkpoints"))
+}
+
+fn ensure_checkpoints_dir(session_id: &str) -> Result<PathBuf, String> {
+    let path = checkpoints_dir(session_id)?;
+    if !path.exists() {
+        fs::create_dir_all(&path)
+            .map_err(|e| format!("Failed to create checkpoints directory: {}", e))?;
+    }
+    Ok(path)
+}
+
+fn checkpoint_dir(session_id: &str, checkpoint_id: &str) -> Result<PathBuf, String> {
+    Ok(ensure_checkpoints_dir(session_id)?.join(checkpoint_id))
+}
+
+fn resolve_target_path(base: &Path, file_path: &str) -> PathBuf {
+    let rel = Path::new(file_path);
+    if rel.is_absolute() {
+        rel.strip_prefix(base)
+            .map(|p| base.join(p))
+            .unwrap_or_else(|_| {
+                rel.file_name()
+                    .map(|name| base.join(name))
+                    .unwrap_or_else(|| base.to_path_buf())
+            })
+    } else {
+        base.join(rel)
+    }
 }
 
 #[command]
 pub async fn save_checkpoint_files(
+    session_id: String,
     checkpoint_id: String,
     files: Vec<FileSnapshot>,
     trigger: Option<String>,
 ) -> Result<(), String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+    let checkpoint_dir = checkpoint_dir(&session_id, &checkpoint_id)?;
 
-    // Create checkpoint directory
     fs::create_dir_all(&checkpoint_dir)
         .map_err(|e| format!("Failed to create checkpoint directory: {}", e))?;
 
-    // Save metadata
+    let git_base = project_root_for(&session_id).ok();
+
     let metadata = CheckpointMetadata {
         id: checkpoint_id.clone(),
         timestamp: Utc::now(),
@@ -73,8 +100,8 @@ pub async fn save_checkpoint_files(
         checkpoint_type: "auto".to_string(),
         trigger,
         file_count: files.len(),
-        git_branch: get_git_branch().ok(),
-        git_commit: get_git_commit().ok(),
+        git_branch: git_base.as_ref().and_then(|base| get_git_branch(base).ok()),
+        git_commit: git_base.as_ref().and_then(|base| get_git_commit(base).ok()),
     };
 
     let metadata_path = checkpoint_dir.join("metadata.json");
@@ -83,30 +110,25 @@ pub async fn save_checkpoint_files(
     fs::write(metadata_path, metadata_json)
         .map_err(|e| format!("Failed to write metadata: {}", e))?;
 
-    // Save file snapshots
     let files_dir = checkpoint_dir.join("files");
     fs::create_dir_all(&files_dir)
         .map_err(|e| format!("Failed to create files directory: {}", e))?;
 
     for (index, file) in files.iter().enumerate() {
-        // Create a safe filename from the path
         let safe_name = format!("file_{}.json", index);
         let file_path = files_dir.join(safe_name);
 
-        // Save file snapshot as JSON
         let file_json = serde_json::to_string_pretty(&file)
             .map_err(|e| format!("Failed to serialize file snapshot: {}", e))?;
         fs::write(file_path, file_json)
             .map_err(|e| format!("Failed to write file snapshot: {}", e))?;
 
-        // Also save the actual file content separately for easier access
         let content_name = format!("content_{}.txt", index);
         let content_path = files_dir.join(content_name);
         fs::write(content_path, &file.current_content)
             .map_err(|e| format!("Failed to write file content: {}", e))?;
     }
 
-    // Save file mapping for easy lookup
     let mapping: HashMap<String, usize> = files
         .iter()
         .enumerate()
@@ -123,54 +145,35 @@ pub async fn save_checkpoint_files(
 }
 
 #[command]
-pub async fn restore_checkpoint(checkpoint_id: String) -> Result<(), String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+pub async fn restore_checkpoint(session_id: String, checkpoint_id: String) -> Result<(), String> {
+    let checkpoint_dir = checkpoint_dir(&session_id, &checkpoint_id)?;
 
     if !checkpoint_dir.exists() {
         return Err(format!("Checkpoint {} not found", checkpoint_id));
     }
 
-    // Load file mapping
     let mapping_path = checkpoint_dir.join("file_mapping.json");
-    let mapping_json = fs::read_to_string(mapping_path)
+    let mapping_json = fs::read_to_string(&mapping_path)
         .map_err(|e| format!("Failed to read file mapping: {}", e))?;
     let mapping: HashMap<String, usize> = serde_json::from_str(&mapping_json)
         .map_err(|e| format!("Failed to parse file mapping: {}", e))?;
 
-    // Restore each file
     let files_dir = checkpoint_dir.join("files");
+    let project_base = project_root_for(&session_id)?;
     for (file_path, index) in mapping.iter() {
         let snapshot_path = files_dir.join(format!("file_{}.json", index));
-        let snapshot_json = fs::read_to_string(snapshot_path)
+        let snapshot_json = fs::read_to_string(&snapshot_path)
             .map_err(|e| format!("Failed to read file snapshot: {}", e))?;
         let snapshot: FileSnapshot = serde_json::from_str(&snapshot_json)
             .map_err(|e| format!("Failed to parse file snapshot: {}", e))?;
 
-        // Restore the file content to project-scoped path
-        let project_dir = PROJECT_DIR.lock().unwrap().clone();
-        let base = if project_dir.is_empty() {
-            PathBuf::from(".")
-        } else {
-            PathBuf::from(project_dir)
-        };
-        let rel = Path::new(&file_path);
-        // If path is absolute and starts with project, strip the prefix; else treat as relative
-        let target_path = if rel.is_absolute() {
-            match rel.strip_prefix(&base) {
-                Ok(p) => base.join(p),
-                Err(_) => base.join(rel.file_name().unwrap_or_default()),
-            }
-        } else {
-            base.join(rel)
-        };
+        let target_path = resolve_target_path(&project_base, file_path);
 
-        // Create parent directories if they don't exist
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create parent directory: {}", e))?;
         }
 
-        // Write the original content back
         fs::write(&target_path, &snapshot.original_content)
             .map_err(|e| format!("Failed to restore file {}: {}", file_path, e))?;
     }
@@ -187,15 +190,15 @@ pub struct CheckpointFileData {
 
 #[tauri::command]
 pub async fn get_checkpoint_file(
+    session_id: String,
     checkpoint_id: String,
     file_path: String,
 ) -> Result<CheckpointFileData, String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+    let checkpoint_dir = checkpoint_dir(&session_id, &checkpoint_id)?;
     if !checkpoint_dir.exists() {
         return Err(format!("Checkpoint {} not found", checkpoint_id));
     }
 
-    // Load file mapping
     let mapping_path = checkpoint_dir.join("file_mapping.json");
     let mapping_json = fs::read_to_string(&mapping_path)
         .map_err(|e| format!("Failed to read file mapping: {}", e))?;
@@ -222,44 +225,31 @@ pub async fn get_checkpoint_file(
 
 #[tauri::command]
 pub async fn restore_checkpoint_with_mode(
+    session_id: String,
     checkpoint_id: String,
     mode: String,
 ) -> Result<(), String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+    let checkpoint_dir = checkpoint_dir(&session_id, &checkpoint_id)?;
     if !checkpoint_dir.exists() {
         return Err(format!("Checkpoint {} not found", checkpoint_id));
     }
 
-    // Load file mapping and restore each file
     let mapping_path = checkpoint_dir.join("file_mapping.json");
     let mapping_json = fs::read_to_string(&mapping_path)
         .map_err(|e| format!("Failed to read file mapping: {}", e))?;
     let mapping: HashMap<String, usize> = serde_json::from_str(&mapping_json)
         .map_err(|e| format!("Failed to parse file mapping: {}", e))?;
 
+    let project_base = project_root_for(&session_id)?;
+    let files_dir = checkpoint_dir.join("files");
     for (file_path, index) in mapping.iter() {
-        let files_dir = checkpoint_dir.join("files");
         let snapshot_path = files_dir.join(format!("file_{}.json", index));
         let snapshot_json = fs::read_to_string(&snapshot_path)
             .map_err(|e| format!("Failed to read file snapshot: {}", e))?;
         let snapshot: FileSnapshot = serde_json::from_str(&snapshot_json)
             .map_err(|e| format!("Failed to parse file snapshot: {}", e))?;
 
-        let project_dir = PROJECT_DIR.lock().unwrap().clone();
-        let base = if project_dir.is_empty() {
-            PathBuf::from(".")
-        } else {
-            PathBuf::from(project_dir)
-        };
-        let rel = Path::new(file_path);
-        let target_path = if rel.is_absolute() {
-            match rel.strip_prefix(&base) {
-                Ok(p) => base.join(p),
-                Err(_) => base.join(rel.file_name().unwrap_or_default()),
-            }
-        } else {
-            base.join(rel)
-        };
+        let target_path = resolve_target_path(&project_base, file_path);
 
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent)
@@ -279,11 +269,12 @@ pub async fn restore_checkpoint_with_mode(
 
 #[tauri::command]
 pub async fn restore_checkpoint_files(
+    session_id: String,
     checkpoint_id: String,
     files: Vec<String>,
     mode: String,
 ) -> Result<(), String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+    let checkpoint_dir = checkpoint_dir(&session_id, &checkpoint_id)?;
     if !checkpoint_dir.exists() {
         return Err(format!("Checkpoint {} not found", checkpoint_id));
     }
@@ -294,6 +285,7 @@ pub async fn restore_checkpoint_files(
     let mapping: HashMap<String, usize> = serde_json::from_str(&mapping_json)
         .map_err(|e| format!("Failed to parse file mapping: {}", e))?;
 
+    let project_base = project_root_for(&session_id)?;
     let files_dir = checkpoint_dir.join("files");
     for file_path in files.iter() {
         if let Some(index) = mapping.get(file_path) {
@@ -303,21 +295,7 @@ pub async fn restore_checkpoint_files(
             let snapshot: FileSnapshot = serde_json::from_str(&snapshot_json)
                 .map_err(|e| format!("Failed to parse file snapshot: {}", e))?;
 
-            let project_dir = PROJECT_DIR.lock().unwrap().clone();
-            let base = if project_dir.is_empty() {
-                PathBuf::from(".")
-            } else {
-                PathBuf::from(project_dir)
-            };
-            let rel = Path::new(file_path);
-            let target_path = if rel.is_absolute() {
-                match rel.strip_prefix(&base) {
-                    Ok(p) => base.join(p),
-                    Err(_) => base.join(rel.file_name().unwrap_or_default()),
-                }
-            } else {
-                base.join(rel)
-            };
+            let target_path = resolve_target_path(&project_base, file_path);
 
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent)
@@ -339,11 +317,12 @@ pub async fn restore_checkpoint_files(
 }
 
 #[command]
-pub async fn delete_checkpoint(checkpoint_id: String) -> Result<(), String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+pub async fn delete_checkpoint(session_id: String, checkpoint_id: String) -> Result<(), String> {
+    let dir = checkpoints_dir(&session_id)?;
+    let checkpoint_dir = dir.join(&checkpoint_id);
 
     if checkpoint_dir.exists() {
-        fs::remove_dir_all(checkpoint_dir)
+        fs::remove_dir_all(&checkpoint_dir)
             .map_err(|e| format!("Failed to delete checkpoint: {}", e))?;
     }
 
@@ -351,8 +330,12 @@ pub async fn delete_checkpoint(checkpoint_id: String) -> Result<(), String> {
 }
 
 #[command]
-pub async fn list_checkpoint_files(checkpoint_id: String) -> Result<Vec<String>, String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+pub async fn list_checkpoint_files(
+    session_id: String,
+    checkpoint_id: String,
+) -> Result<Vec<String>, String> {
+    let dir = checkpoints_dir(&session_id)?;
+    let checkpoint_dir = dir.join(&checkpoint_id);
 
     if !checkpoint_dir.exists() {
         return Err(format!("Checkpoint {} not found", checkpoint_id));
@@ -368,24 +351,29 @@ pub async fn list_checkpoint_files(checkpoint_id: String) -> Result<Vec<String>,
 }
 
 #[command]
-pub async fn get_checkpoint_metadata(checkpoint_id: String) -> Result<CheckpointMetadata, String> {
-    let checkpoint_dir = get_checkpoint_dir(&checkpoint_id);
+pub async fn get_checkpoint_metadata(
+    session_id: String,
+    checkpoint_id: String,
+) -> Result<CheckpointMetadata, String> {
+    let dir = checkpoints_dir(&session_id)?;
+    let checkpoint_dir = dir.join(&checkpoint_id);
+
     let metadata_path = checkpoint_dir.join("metadata.json");
 
-    let metadata_json =
-        fs::read_to_string(metadata_path).map_err(|e| format!("Failed to read metadata: {}", e))?;
+    let metadata_json = fs::read_to_string(&metadata_path)
+        .map_err(|e| format!("Failed to read metadata: {}", e))?;
     let metadata: CheckpointMetadata = serde_json::from_str(&metadata_json)
         .map_err(|e| format!("Failed to parse metadata: {}", e))?;
 
     Ok(metadata)
 }
 
-// Helper functions for git info
-fn get_git_branch() -> Result<String, String> {
+fn get_git_branch(base: &Path) -> Result<String, String> {
     use std::process::Command;
 
     let output = Command::new("git")
-        .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(base)
         .output()
         .map_err(|e| format!("Failed to run git command: {}", e))?;
 
@@ -398,11 +386,12 @@ fn get_git_branch() -> Result<String, String> {
         .map_err(|e| format!("Failed to parse git output: {}", e))
 }
 
-fn get_git_commit() -> Result<String, String> {
+fn get_git_commit(base: &Path) -> Result<String, String> {
     use std::process::Command;
 
     let output = Command::new("git")
-        .args(&["rev-parse", "HEAD"])
+        .args(["rev-parse", "HEAD"])
+        .current_dir(base)
         .output()
         .map_err(|e| format!("Failed to run git command: {}", e))?;
 
@@ -416,14 +405,21 @@ fn get_git_commit() -> Result<String, String> {
 }
 
 #[command]
-pub async fn get_git_info() -> Result<HashMap<String, String>, String> {
+pub async fn get_git_info(session_id: String) -> Result<HashMap<String, String>, String> {
     let mut info = HashMap::new();
+    let base = match project_root_for(&session_id) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("get_git_info: {}", err);
+            return Ok(info);
+        }
+    };
 
-    if let Ok(branch) = get_git_branch() {
+    if let Ok(branch) = get_git_branch(&base) {
         info.insert("branch".to_string(), branch);
     }
 
-    if let Ok(commit) = get_git_commit() {
+    if let Ok(commit) = get_git_commit(&base) {
         info.insert("commit".to_string(), commit);
     }
 
@@ -431,13 +427,19 @@ pub async fn get_git_info() -> Result<HashMap<String, String>, String> {
 }
 
 #[command]
-pub async fn clean_old_checkpoints(keep_count: usize) -> Result<(), String> {
-    let checkpoints_dir = get_checkpoints_dir();
+pub async fn clean_old_checkpoints(session_id: String, keep_count: usize) -> Result<(), String> {
+    let dir = match checkpoints_dir(&session_id) {
+        Ok(path) => path,
+        Err(_) => return Ok(()),
+    };
 
-    // Get all checkpoint directories with their metadata
+    if !dir.exists() {
+        return Ok(());
+    }
+
     let mut checkpoints: Vec<(PathBuf, DateTime<Utc>)> = Vec::new();
 
-    if let Ok(entries) = fs::read_dir(&checkpoints_dir) {
+    if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 let metadata_path = entry.path().join("metadata.json");
@@ -454,10 +456,8 @@ pub async fn clean_old_checkpoints(keep_count: usize) -> Result<(), String> {
         }
     }
 
-    // Sort by timestamp (newest first)
     checkpoints.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Delete old checkpoints
     for (path, _) in checkpoints.iter().skip(keep_count) {
         fs::remove_dir_all(path).map_err(|e| format!("Failed to delete old checkpoint: {}", e))?;
     }
@@ -466,10 +466,18 @@ pub async fn clean_old_checkpoints(keep_count: usize) -> Result<(), String> {
 }
 
 #[command]
-pub async fn list_checkpoints() -> Result<Vec<CheckpointMetadata>, String> {
-    let checkpoints_dir = get_checkpoints_dir();
+pub async fn list_checkpoints(session_id: String) -> Result<Vec<CheckpointMetadata>, String> {
+    let dir = match checkpoints_dir(&session_id) {
+        Ok(path) => path,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
     let mut out: Vec<CheckpointMetadata> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&checkpoints_dir) {
+    if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 let meta_path = entry.path().join("metadata.json");
@@ -483,7 +491,6 @@ pub async fn list_checkpoints() -> Result<Vec<CheckpointMetadata>, String> {
             }
         }
     }
-    // Newest first
     out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(out)
 }

@@ -1,11 +1,19 @@
 import { Paperclip, Image as ImageIcon, Mic, Terminal as TerminalIcon, StopCircle, Send, ChevronDown } from 'lucide-react'
-import React, { useState, useRef, useEffect, useMemo } from 'react'
-import { useSession } from '../state/session'
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useSession, queueSessionEvent } from '../state/session'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { readTextFile } from '@tauri-apps/plugin-fs'
 import { listen as tauriListen } from '@tauri-apps/api/event'
 import { useSettings } from '../state/settings'
+import { useProjectFiles } from '../hooks/useProjectFiles'
 import type { SessionEvent } from '../state/session'
+import {
+  CODEX_MODELS,
+  DEFAULT_MODEL_ID,
+  DEFAULT_MODE_ID,
+  MODE_OPTIONS,
+  type ModeOptionId,
+} from '../constants/codex'
 
 const agents = [
   {
@@ -15,114 +23,7 @@ const agents = [
     description: 'OpenAI Codex CLI • Streaming'
   }
 ]
-
-type ReasoningEffortLevel = 'minimal' | 'low' | 'medium' | 'high'
-
-type CodexModel = {
-  id: string
-  label: string
-  description: string
-  color: string
-  slug: string
-  effort?: ReasoningEffortLevel
-}
-
-type ModeOptionId = 'chat-plan' | 'agent' | 'agent-full'
-
-type ApprovalPolicyValue = 'on-request' | 'on-failure' | 'never'
-type SandboxModeValue = 'workspace-write' | 'danger-full-access' | 'read-only'
-
-type ModeOption = {
-  id: ModeOptionId
-  label: string
-  autoAccept: boolean
-  approvalPolicy: ApprovalPolicyValue
-  sandboxMode: SandboxModeValue
-}
-
-const CODEX_MODELS: CodexModel[] = [
-  {
-    id: 'gpt-5-codex-low',
-    label: 'gpt-5-codex low',
-    description: 'Codex automation tuned for low reasoning effort.',
-    color: '#6366f1',
-    slug: 'gpt-5-codex',
-    effort: 'low'
-  },
-  {
-    id: 'gpt-5-codex-medium',
-    label: 'gpt-5-codex medium',
-    description: 'Balanced Codex automation profile.',
-    color: '#7c3aed',
-    slug: 'gpt-5-codex'
-  },
-  {
-    id: 'gpt-5-codex-high',
-    label: 'gpt-5-codex high',
-    description: 'Codex automation with maximum reasoning depth.',
-    color: '#a855f7',
-    slug: 'gpt-5-codex',
-    effort: 'high'
-  },
-  {
-    id: 'gpt-5-minimal',
-    label: 'gpt-5 minimal',
-    description: 'Fastest responses with limited reasoning; good for lightweight tasks.',
-    color: '#0ea5e9',
-    slug: 'gpt-5',
-    effort: 'minimal'
-  },
-  {
-    id: 'gpt-5-low',
-    label: 'gpt-5 low',
-    description: 'Balances speed with some reasoning for straightforward prompts.',
-    color: '#14b8a6',
-    slug: 'gpt-5',
-    effort: 'low'
-  },
-  {
-    id: 'gpt-5-medium',
-    label: 'gpt-5 medium',
-    description: 'Default mix of reasoning depth and latency.',
-    color: '#f97316',
-    slug: 'gpt-5',
-    effort: 'medium'
-  },
-  {
-    id: 'gpt-5-high',
-    label: 'gpt-5 high',
-    description: 'Maximum reasoning depth for complex or ambiguous problems.',
-    color: '#ef4444',
-    slug: 'gpt-5',
-    effort: 'high'
-  }
-]
-
-const DEFAULT_MODEL_ID = 'gpt-5-medium'
-const MODE_OPTIONS: ModeOption[] = [
-  {
-    id: 'chat-plan',
-    label: 'Chat or Plan',
-    autoAccept: false,
-    approvalPolicy: 'on-request',
-    sandboxMode: 'workspace-write'
-  },
-  {
-    id: 'agent',
-    label: 'Agent',
-    autoAccept: false,
-    approvalPolicy: 'on-failure',
-    sandboxMode: 'workspace-write'
-  },
-  {
-    id: 'agent-full',
-    label: 'Agent (full access)',
-    autoAccept: true,
-    approvalPolicy: 'never',
-    sandboxMode: 'danger-full-access'
-  }
-]
-const DEFAULT_MODE_ID: ModeOptionId = 'agent-full'
+const MAX_CONTEXT_RESULTS = 100
 
 export function Composer() {
   const [input, setInput] = useState('')
@@ -132,6 +33,11 @@ export function Composer() {
   const [isDragging, setIsDragging] = useState(false)
   const [showModelMenu, setShowModelMenu] = useState(false)
   const [showModeMenu, setShowModeMenu] = useState(false)
+  const [contextMenuOpen, setContextMenuOpen] = useState(false)
+  const [contextMenuManual, setContextMenuManual] = useState(false)
+  const [contextQuery, setContextQuery] = useState('')
+  const [contextHighlight, setContextHighlight] = useState(0)
+  const [contextTokens, setContextTokens] = useState<string[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -139,20 +45,30 @@ export function Composer() {
   const modelButtonRef = useRef<HTMLButtonElement>(null)
   const modeMenuRef = useRef<HTMLDivElement>(null)
   const modeButtonRef = useRef<HTMLButtonElement>(null)
+  const contextButtonRef = useRef<HTMLButtonElement>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const contextSearchRef = useRef<HTMLInputElement>(null)
+  const [activeMention, setActiveMention] = useState<{ start: number; end: number; query: string } | null>(null)
   const pushEvent = useSession((s) => s.pushEvent)
+  const showTerminal = useSession((s) => s.showTerminal)
   const setShowTerminal = useSession((s) => s.setShowTerminal)
   const streamEnabledRef = useRef<boolean>(false)
-  const autoAccept = useSession((s) => s.autoAccept)
   const setAutoAccept = useSession((s) => s.setAutoAccept)
+  const setCodexSelection = useSession((s) => s.setCodexSelection)
   const contextUsage = useSession((s) => s.contextUsage)
   const messages = useSession((s) => s.messages)
   const isStreaming = useSession((s) => s.isStreaming)
+  const sessionId = useSession((s) => s.sessionId)
   const setStreaming = useSession((s) => s.setStreaming)
   const projectDir = useSession((s) => s.projectDir)
   const appSettings = useSettings((s) => s.settings)
+  const { files: projectFiles, loading: filesLoading, error: filesError, hasProject } = useProjectFiles()
 
   const loadStoredModel = () => {
-    const fallback = CODEX_MODELS.find((m) => m.id === DEFAULT_MODEL_ID)?.id ?? CODEX_MODELS[0].id
+    const preferred = appSettings.defaultModelId
+    const fallback = CODEX_MODELS.find((m) => m.id === preferred)?.id
+      ?? CODEX_MODELS.find((m) => m.id === DEFAULT_MODEL_ID)?.id
+      ?? CODEX_MODELS[0].id
     if (typeof window === 'undefined') return fallback
     try {
       const stored = localStorage.getItem('codex:selected-model')
@@ -164,12 +80,12 @@ export function Composer() {
   }
 
   const [selectedModel, setSelectedModel] = useState<string>(loadStoredModel)
+  const previousDefaultModelRef = useRef(appSettings.defaultModelId)
 
-  const loadStoredMode = () => {
+const loadStoredMode = () => {
+    const preferred = appSettings.defaultModeId ?? DEFAULT_MODE_ID
     if (typeof window === 'undefined') {
-      return (
-        MODE_OPTIONS.find((opt) => opt.autoAccept === autoAccept)?.id ?? DEFAULT_MODE_ID
-      )
+      return preferred
     }
     try {
       const stored = localStorage.getItem('codex:selected-mode') as ModeOptionId | null
@@ -177,10 +93,11 @@ export function Composer() {
         return stored
       }
     } catch {}
-    return MODE_OPTIONS.find((opt) => opt.autoAccept === autoAccept)?.id ?? DEFAULT_MODE_ID
+    return preferred
   }
 
   const [selectedMode, setSelectedMode] = useState<ModeOptionId>(loadStoredMode)
+  const previousDefaultModeRef = useRef(appSettings.defaultModeId)
 
   const contextInfo = useMemo(() => {
     if (!contextUsage) return undefined
@@ -205,6 +122,43 @@ export function Composer() {
     }
   }, [contextUsage])
 
+  const contextTokenForPath = useCallback((relativePath: string) => {
+    const normalized = relativePath.replace(/^\.\//, '')
+    return /\s/.test(normalized) ? `@"${normalized}"` : `@${normalized}`
+  }, [])
+
+  const stripContextTokens = useCallback((value: string) => {
+    return value
+      .replace(/@"([^"\n]+)"/g, '')
+      .replace(/@([^\s@]+)/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trimStart()
+  }, [])
+
+  const findActiveMention = useCallback((value: string, cursor: number) => {
+    let index = cursor - 1
+    while (index >= 0 && !/\s/.test(value[index])) {
+      index -= 1
+    }
+    const start = Math.max(0, index + 1)
+    if (start < value.length && value[start] === '@') {
+      const end = cursor
+      const query = value.slice(start + 1, end)
+      return { start, end, query }
+    }
+    return null
+  }, [])
+
+  const contextMatches = useMemo(() => {
+    if (!contextMenuOpen) return []
+    if (!contextQuery.trim()) {
+      return projectFiles.slice(0, MAX_CONTEXT_RESULTS)
+    }
+    const needle = contextQuery.trim().toLowerCase()
+    const filtered = projectFiles.filter((filePath) => filePath.toLowerCase().includes(needle))
+    return filtered.slice(0, MAX_CONTEXT_RESULTS)
+  }, [contextMenuOpen, projectFiles, contextQuery])
+
   const formatTokens = (value?: number) => {
     if (value === undefined || value === null) return ''
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
@@ -214,21 +168,105 @@ export function Composer() {
   }
 
 // -- helpers ----------------------------------------------------------------
-  const adjustTextareaHeight = () => {
+  const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
     const next = Math.min(200, Math.max(36, el.scrollHeight))
     el.style.height = `${next}px`
-  }
+  }, [])
+
+  const updateMentionState = useCallback(
+    (value: string, cursor?: number | null) => {
+      if (cursor === null || cursor === undefined) {
+        if (!contextMenuManual) {
+          setActiveMention(null)
+          setContextMenuOpen(false)
+          setContextQuery('')
+          setShowAgents(false)
+        }
+        return
+      }
+
+      const mention = findActiveMention(value, cursor)
+      if (mention) {
+        setActiveMention(mention)
+        setContextQuery(mention.query)
+        setContextMenuManual(false)
+        setContextMenuOpen(true)
+        setContextHighlight(0)
+
+        const normalized = mention.query.toLowerCase()
+        const shouldShowAgents =
+          normalized.length > 0 && agents.some((agent) => agent.id.toLowerCase().startsWith(normalized))
+        setShowAgents(shouldShowAgents)
+      } else if (!contextMenuManual) {
+        setActiveMention(null)
+        setContextMenuOpen(false)
+        setContextQuery('')
+        setShowAgents(false)
+      }
+    },
+    [contextMenuManual, findActiveMention, agents]
+  )
+
+  const updateInputValue = useCallback(
+    (value: string, cursor?: number | null) => {
+      setInput(value)
+      adjustTextareaHeight()
+      updateMentionState(value, cursor ?? value.length)
+    },
+    [adjustTextareaHeight, updateMentionState]
+  )
+
+  const applyContextToken = useCallback(
+    (token: string, options?: { mention?: { start: number; end: number }; focus?: boolean }) => {
+      const { mention, focus = true } = options ?? {}
+      setContextTokens((prev) => (prev.includes(token) ? prev : [...prev, token]))
+
+      let base = input
+      if (mention) {
+        base = input.slice(0, mention.start) + input.slice(mention.end)
+      }
+      base = stripContextTokens(base)
+      base = base.replace(/\s{2,}/g, ' ').trim()
+      const next = base.length ? `${base} ` : ''
+
+      setActiveMention(null)
+      setShowAgents(false)
+      setContextMenuOpen(false)
+      setContextMenuManual(false)
+      updateInputValue(next, next.length)
+
+      if (focus) {
+        setTimeout(() => textareaRef.current?.focus(), 0)
+      }
+    },
+    [input, stripContextTokens, updateInputValue]
+  )
+
 
   useEffect(() => {
     adjustTextareaHeight()
-  }, [input])
+  }, [adjustTextareaHeight, input])
+
+useEffect(() => {
+  try { localStorage.setItem('codex:selected-model', selectedModel) } catch {}
+}, [selectedModel])
+
+useEffect(() => {
+  const preferred = appSettings.defaultModelId
+  if (!preferred || previousDefaultModelRef.current === preferred) return
+  previousDefaultModelRef.current = preferred
+  if (CODEX_MODELS.some((model) => model.id === preferred)) {
+    setSelectedModel(preferred)
+    try { localStorage.setItem('codex:selected-model', preferred) } catch {}
+  }
+}, [appSettings.defaultModelId])
 
   useEffect(() => {
-    try { localStorage.setItem('codex:selected-model', selectedModel) } catch {}
-  }, [selectedModel])
+    setCodexSelection({ modelId: selectedModel })
+  }, [selectedModel, setCodexSelection])
 
   useEffect(() => {
     if (!showModelMenu) return
@@ -256,11 +294,22 @@ export function Composer() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [showModeMenu])
 
-  useEffect(() => {
-    const option = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
-    try { localStorage.setItem('codex:selected-mode', option.id) } catch {}
-    setAutoAccept(option.autoAccept)
-  }, [selectedMode, setAutoAccept])
+useEffect(() => {
+  const option = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
+  try { localStorage.setItem('codex:selected-mode', option.id) } catch {}
+  setAutoAccept(option.autoAccept)
+  setCodexSelection({ modeId: option.id })
+}, [selectedMode, setAutoAccept, setCodexSelection])
+
+useEffect(() => {
+  const preferred = appSettings.defaultModeId
+  if (!preferred || previousDefaultModeRef.current === preferred) return
+  previousDefaultModeRef.current = preferred
+  if (MODE_OPTIONS.some((opt) => opt.id === preferred)) {
+    setSelectedMode(preferred)
+    try { localStorage.setItem('codex:selected-mode', preferred) } catch {}
+  }
+}, [appSettings.defaultModeId])
 
   // Handle image paste on the textarea
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -329,8 +378,16 @@ export function Composer() {
       const raw = event?.payload
       const events = Array.isArray(raw) ? raw : [raw]
       events.forEach((ev) => {
-        const data = ev as SessionEvent
-        if (!data) return
+        const payload = ev as any
+        if (!payload) return
+        const eventSessionId = typeof payload.sessionId === 'string' ? (payload.sessionId as string) : undefined
+        const targetSessionId = eventSessionId || sessionId
+        const data = { ...payload } as SessionEvent & { sessionId?: string }
+        delete (data as any).sessionId
+        if (targetSessionId !== sessionId) {
+          queueSessionEvent(targetSessionId, data)
+          return
+        }
         if (data.type === 'assistant:delta') {
           if (!isStreaming) {
             setStreaming(true)
@@ -349,10 +406,35 @@ export function Composer() {
     const handleError = (ev?: any) => {
       try {
         const raw = (ev && (ev.payload ?? ev)) || ''
-        const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
-        if (text && /error|invalid|missing|unauthorized|forbidden|denied|timed out|timeout/i.test(text)) {
+        const payload = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined
+        const eventSessionId = typeof payload?.sessionId === 'string' ? (payload.sessionId as string) : undefined
+        const targetSessionId = eventSessionId || sessionId
+        const message = typeof payload?.message === 'string' ? (payload.message as string) : undefined
+        const text = message || (typeof raw === 'string' ? raw : JSON.stringify(raw))
+        if (!text) return
+
+        if (targetSessionId !== sessionId) {
+          queueSessionEvent(targetSessionId, { id: String(Date.now()), type: 'message', role: 'assistant', text, ts: Date.now() } as any)
+          return
+        }
+
+        if (/submission queue closed/i.test(text)) {
+          pushEvent({ id: String(Date.now()), type: 'message', role: 'assistant', text: '⚠️ Codex CLI closed the submission queue before responding.', ts: Date.now() } as any)
+          setStreaming(false)
+          streamEnabledRef.current = false
+          return
+        }
+
+        if (/saving session/i.test(text) || /completed\.?$/i.test(text.trim())) {
+          setStreaming(false)
+          streamEnabledRef.current = false
+          return
+        }
+
+        if (/error|invalid|missing|unauthorized|forbidden|denied|timed out|timeout|failed|not found/i.test(text)) {
           pushEvent({ id: String(Date.now()), type: 'message', role: 'assistant', text: `⚠️ ${text}`, ts: Date.now() } as any)
           setStreaming(false)
+          streamEnabledRef.current = false
         }
       } catch {}
     }
@@ -368,27 +450,149 @@ export function Composer() {
       mounted = false
       unlisten.forEach((fn) => fn && fn())
     }
-  }, [isStreaming, pushEvent, setStreaming])
+  }, [isStreaming, pushEvent, setStreaming, sessionId])
 
-  const handleInputChange = (value: string) => {
-    setInput(value)
-    adjustTextareaHeight()
-    const inProgressMention = /@([a-z]*)$/i.test(value)
-    if (inProgressMention) {
-      setShowAgents(true)
-    } else if (!value.includes('@') || value.match(/@codex\s/i)) {
-      setShowAgents(false)
-    }
+  const handleTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const { value, selectionStart } = event.target
+    updateInputValue(value, selectionStart ?? value.length)
   }
 
-  const handleAddContext = () => {
+  const fallbackContextMention = () => {
     const needsSpace = input.length > 0 && !input.endsWith(' ') && !input.endsWith('@')
     const needsAt = !input.endsWith('@')
     const nextValue = `${input}${needsSpace ? ' ' : ''}${needsAt ? '@' : ''}`
-    handleInputChange(nextValue)
+    updateInputValue(nextValue, nextValue.length)
     setShowAgents(true)
     setTimeout(() => textareaRef.current?.focus(), 0)
   }
+
+  const handleAddContext = () => {
+    if (!(window as any).__TAURI__) {
+      fallbackContextMention()
+      return
+    }
+
+    if (!hasProject) {
+      fallbackContextMention()
+      return
+    }
+
+    setShowAgents(false)
+    setContextMenuOpen((prev) => {
+      const next = !prev
+      if (next) {
+        setContextMenuManual(true)
+        setContextQuery('')
+        setContextHighlight(0)
+        setTimeout(() => contextSearchRef.current?.focus(), 0)
+      } else {
+        setContextMenuManual(false)
+      }
+      return next
+    })
+  }
+
+  const handleSelectContext = (relativePath: string) => {
+    const token = contextTokenForPath(relativePath)
+    if (activeMention) {
+      applyContextToken(token, { mention: activeMention })
+    } else {
+      applyContextToken(token)
+    }
+  }
+
+  const handleContextKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!contextMenuOpen) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (!contextMatches.length) return
+      setContextHighlight((prev) => {
+        const next = prev + 1
+        return next >= contextMatches.length ? contextMatches.length - 1 : next
+      })
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!contextMatches.length) return
+      setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1))
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const targetPath = contextMatches[contextHighlight] ?? contextMatches[0]
+      if (targetPath) {
+        handleSelectContext(targetPath)
+      }
+    }
+    if (event.key === 'Escape') {
+      setContextMenuOpen(false)
+      setContextMenuManual(false)
+      contextButtonRef.current?.focus()
+    }
+  }
+
+  const removeContextToken = useCallback(
+    (token: string) => {
+      setContextTokens((prev) => prev.filter((t) => t !== token))
+      const cleaned = stripContextTokens(input).replace(/\s{2,}/g, ' ').trim()
+      const next = cleaned.length ? `${cleaned} ` : ''
+      updateInputValue(next, next.length)
+    },
+    [input, stripContextTokens, updateInputValue]
+  )
+
+  useEffect(() => {
+    if (!contextMenuOpen) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (contextMenuRef.current?.contains(target)) return
+      if (contextButtonRef.current?.contains(target)) return
+      setContextMenuOpen(false)
+      setContextMenuManual(false)
+      setActiveMention(null)
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [contextMenuOpen])
+
+  useEffect(() => {
+    if (!contextMenuOpen) return
+    if (!contextMatches.length) {
+      setContextHighlight(-1)
+      return
+    }
+    setContextHighlight((prev) => {
+      if (prev < 0) return 0
+      if (prev >= contextMatches.length) return contextMatches.length - 1
+      return prev
+    })
+  }, [contextMenuOpen, contextMatches])
+
+  useEffect(() => {
+    if (!hasProject) {
+      setContextMenuOpen(false)
+      setContextMenuManual(false)
+      setActiveMention(null)
+    }
+  }, [hasProject])
+
+  useEffect(() => {
+    if (activeMention) {
+      setContextQuery(activeMention.query)
+      setContextMenuManual(false)
+      setContextMenuOpen(true)
+      setContextHighlight(0)
+    } else if (!contextMenuManual) {
+      setContextMenuOpen(false)
+      setContextQuery('')
+    }
+  }, [activeMention, contextMenuManual])
 
   const toggleModelMenu = () => {
     setShowModelMenu((prev) => {
@@ -408,12 +612,16 @@ export function Composer() {
 
   const handleSend = async () => {
     const rawText = input.trim()
-    if ((!rawText && attachedImages.length === 0) || isStreaming) return
+    if ((rawText.length === 0 && contextTokens.length === 0 && attachedImages.length === 0) || isStreaming) {
+      return
+    }
 
     const cleanText = rawText.replace(/^@codex(?=[\s:.,-]|$)[\s:.,-]*/i, '').trim()
+    const tokensText = contextTokens.join(' ')
+    const combinedText = [cleanText, tokensText].filter(Boolean).join(cleanText && tokensText ? ' ' : '')
     const content: any[] = []
-    if (cleanText) {
-      content.push({ type: 'text', text: cleanText })
+    if (combinedText) {
+      content.push({ type: 'text', text: combinedText })
     }
     attachedImages.forEach(img => {
       content.push({ type: 'image', url: img.url, name: img.name })
@@ -421,6 +629,7 @@ export function Composer() {
 
     setInput('')
     setAttachedImages([])
+    setContextTokens([])
     setShowAgents(false)
     setShowModelMenu(false)
     // no-op; popover closes
@@ -429,15 +638,16 @@ export function Composer() {
       id: String(Date.now()),
       type: 'message',
       role: 'user',
-      text: cleanText || '[Image]',
+      text: combinedText || tokensText || '[Image]',
       content,
       ts: Date.now(),
       model: currentModel.slug
     } as any
     pushEvent(userEvent)
 
+    const streamMessageId = `assistant-${Date.now()}`
     streamEnabledRef.current = true
-    setStreaming(true, currentModel.slug)
+    setStreaming(true, currentModel.slug, streamMessageId)
 
     const imagePaths: string[] = []
     for (const img of attachedImages) {
@@ -452,9 +662,9 @@ export function Composer() {
       }
     }
 
-    let messageText = cleanText
+    let messageText = combinedText
     if (imagePaths.length > 0) {
-      messageText = `${cleanText} ${imagePaths.join(' ')}`.trim()
+      messageText = `${combinedText} ${imagePaths.join(' ')}`.trim()
     }
 
     let memoryText = ''
@@ -510,7 +720,13 @@ export function Composer() {
     }
 
     try {
-      await tauriInvoke('send_to_codex', { input: JSON.stringify(payload) })
+      if ((window as any).__TAURI__) {
+        console.log('[Composer] invoking start_codex before send')
+        await tauriInvoke('start_codex', { sessionId: sessionId, projectDir: projectDir || '' }).catch((err: unknown) => {
+          console.error('Failed to start Codex:', err)
+        })
+      }
+      await tauriInvoke('send_to_codex', { sessionId: sessionId, input: JSON.stringify(payload) })
     } catch (err) {
       console.error('Failed to invoke Codex:', err)
       setStreaming(false)
@@ -520,7 +736,7 @@ export function Composer() {
 
   const handleStop = async () => {
     try {
-      await tauriInvoke('interrupt_codex')
+      await tauriInvoke('interrupt_codex', { sessionId: sessionId })
     } catch (err) {
       console.error('Failed to interrupt Codex:', err)
     } finally {
@@ -531,6 +747,38 @@ export function Composer() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (contextMenuOpen && activeMention) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (!contextMatches.length) return
+        setContextHighlight((prev) => {
+          const next = prev + 1
+          return next >= contextMatches.length ? contextMatches.length - 1 : next
+        })
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (!contextMatches.length) return
+        setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1))
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        const targetPath = contextMatches[contextHighlight] ?? contextMatches[0]
+        if (targetPath) {
+          handleSelectContext(targetPath)
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setActiveMention(null)
+        setContextMenuOpen(false)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -557,9 +805,89 @@ export function Composer() {
         >
           <div className="input-header">
             <div className="header-left">
-              <button type="button" className="add-context-btn" onClick={handleAddContext}>
-                <span>@</span> Add Context
-              </button>
+              <div className="add-context-wrapper">
+                <button
+                  type="button"
+                  className="add-context-btn"
+                  onClick={handleAddContext}
+                  ref={contextButtonRef}
+                  aria-expanded={contextMenuOpen}
+                  aria-haspopup="dialog"
+                >
+                  <span>@</span> Add Context
+                </button>
+                {contextMenuOpen && (
+                  <div className="context-picker" ref={contextMenuRef} role="dialog" aria-label="Add context files">
+                    <div className="context-picker-search">
+                      <input
+                        ref={contextSearchRef}
+                        value={contextQuery}
+                        onChange={(event) => {
+                          setContextQuery(event.target.value)
+                          setContextHighlight(0)
+                        }}
+                        onFocus={() => setContextMenuManual(true)}
+                        onKeyDown={handleContextKeyDown}
+                        placeholder="Search project files…"
+                        autoFocus={contextMenuManual}
+                      />
+                    </div>
+                    <div className="context-picker-results">
+                      {!hasProject && (
+                        <div className="context-picker-empty">Open a project to attach context files.</div>
+                      )}
+                      {hasProject && filesLoading && (
+                        <div className="context-picker-empty">Loading files…</div>
+                      )}
+                      {hasProject && !filesLoading && filesError && (
+                        <div className="context-picker-empty">{filesError}</div>
+                      )}
+                      {hasProject && !filesLoading && !filesError && contextMatches.length === 0 && (
+                        <div className="context-picker-empty">No matching files.</div>
+                      )}
+                      {hasProject && !filesLoading && !filesError && contextMatches.length > 0 && (
+                        <div className="context-picker-list">
+                          {contextMatches.map((path, index) => (
+                            <button
+                              key={path}
+                              type="button"
+                              className={`context-picker-item ${index === contextHighlight ? 'is-active' : ''}`}
+                              onMouseEnter={() => setContextHighlight(index)}
+                              onMouseDown={(event) => {
+                                event.preventDefault()
+                                handleSelectContext(path)
+                              }}
+                            >
+                              <span className="context-picker-path">{path}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {contextTokens.length > 0 && (
+                <div className="context-pills" aria-label="Context files">
+                  {contextTokens.map((token) => {
+                    const label = token.startsWith('@"') ? token.slice(2, -1) : token.slice(1)
+                    return (
+                      <div key={`${token}`} className="context-pill">
+                        <span className="context-pill-icon">@</span>
+                        <span className="context-pill-label" title={label}>{label}</span>
+                        <button
+                          type="button"
+                          className="context-pill-remove"
+                          onClick={() => removeContextToken(token)}
+                          aria-label={`Remove ${label}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
               {attachedImages.length > 0 && (
                 <div className="attachment-pills" aria-label="Attached images">
                   {attachedImages.map((img, idx) => (
@@ -612,7 +940,7 @@ export function Composer() {
               ref={textareaRef}
               placeholder="Ask Codex to help with your code, explain concepts, or solve problems..."
               value={input}
-              onChange={(e) => handleInputChange(e.target.value)}
+              onChange={handleTextareaChange}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setTimeout(() => setIsFocused(false), 200)}
               onKeyDown={handleKeyDown}
@@ -763,7 +1091,13 @@ export function Composer() {
               <button type="button" className="icon-btn" title="Voice input">
                 <Mic size={16} />
               </button>
-              <button type="button" className="icon-btn" title="Toggle terminal" onClick={() => setShowTerminal(true)}>
+              <button
+                type="button"
+                className={`icon-btn ${showTerminal ? 'active' : ''}`}
+                title="Toggle terminal"
+                onClick={() => setShowTerminal(!showTerminal)}
+                aria-pressed={showTerminal}
+              >
                 <TerminalIcon size={16} />
               </button>
               <button
