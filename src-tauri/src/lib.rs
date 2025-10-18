@@ -9,19 +9,15 @@ use std::sync::Mutex;
 use std::thread;
 use tauri::{Emitter, Manager};
 
-mod codex_bridge;
-use codex_bridge::CodexBridge;
-
 mod terminal;
 use terminal::{LspManager, TerminalManager};
 
 mod checkpoint;
 use checkpoint::*;
 
-mod codex_repo;
-mod codex_run;
-use codex_repo::codex_repo;
-use codex_run::codex_run;
+mod browser;
+use browser::*;
+
 
 trait ModelHandler: Send {
     fn start(&mut self, app: tauri::AppHandle, project_dir: &str) -> Result<(), String>;
@@ -106,6 +102,7 @@ impl ModelHandler for NodeModelHandler {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines() {
                     if let Ok(l) = line {
+                        eprintln!("[model handler {} stderr] {}", model_clone, l);
                         let event_name = format!("{}:error", model_clone);
                         let _ = app_handle.emit(&event_name, l);
                     }
@@ -160,7 +157,6 @@ static MODEL_HANDLERS: Lazy<Mutex<HashMap<String, Box<dyn ModelHandler + Send + 
 
 struct SessionRuntime {
     project_dir: String,
-    codex: Option<CodexBridge>,
     terminal_id: Option<String>,
 }
 
@@ -168,7 +164,6 @@ impl SessionRuntime {
     fn new(project_dir: String) -> Self {
         Self {
             project_dir,
-            codex: None,
             terminal_id: None,
         }
     }
@@ -227,6 +222,9 @@ fn start_codex(
     app: tauri::AppHandle,
     session_id: String,
     project_dir: String,
+    thread_id: Option<String>,
+    model: Option<String>,
+    sandbox_mode: Option<String>,
 ) -> Result<(), String> {
     let resolved_dir = if project_dir.trim().is_empty() {
         std::env::current_dir().map_err(|e| format!("Failed to resolve current dir: {}", e))?
@@ -248,70 +246,85 @@ fn start_codex(
         .entry(session_id.clone())
         .or_insert_with(|| SessionRuntime::new(resolved_str.clone()));
 
-    // If Codex is already running for this session and the project path is unchanged,
-    // treat this as an idempotent call and return early to avoid thrashing the process.
-    let already_running_same_dir =
-        entry.codex.as_ref().is_some() && entry.project_dir == resolved_str;
     entry.project_dir = resolved_str.clone();
 
-    if already_running_same_dir {
-        return Ok(());
-    }
+    {
+        let mut registry = MODEL_HANDLERS.lock().unwrap();
+        if let Some(handler) = registry.get_mut("codex") {
+            handler.start(app.clone(), &resolved_str)?;
 
-    if let Some(mut bridge) = entry.codex.take() {
-        let _ = bridge.stop();
-    }
+            let mut options = serde_json::Map::new();
+            options.insert(
+                "workingDirectory".to_string(),
+                serde_json::Value::String(resolved_str.clone()),
+            );
+            options.insert(
+                "skipGitRepoCheck".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            // Do not pass model to Codex SDK to avoid invalid model errors
+            if let Some(sandbox_value) = sandbox_mode.clone() {
+                options.insert(
+                    "sandboxMode".to_string(),
+                    serde_json::Value::String(sandbox_value),
+                );
+            }
 
-    let mut bridge = CodexBridge::new(app, session_id.clone());
-    bridge.start(&resolved_str)?;
-    entry.codex = Some(bridge);
+            let register_payload = serde_json::json!({
+                "type": "register",
+                "sessionId": session_id,
+                "threadId": thread_id,
+                "options": options,
+            });
+
+            handler.send(&serde_json::to_string(&register_payload).map_err(|e| e.to_string())?)?;
+        }
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 fn send_to_codex(app: tauri::AppHandle, session_id: String, input: String) -> Result<(), String> {
-    let mut sessions = SESSION_MANAGER.lock().unwrap();
-    let entry = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| "Codex session not initialized".to_string())?;
+    let project_dir = {
+        let mut sessions = SESSION_MANAGER.lock().unwrap();
+        let entry = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "Codex session not initialized".to_string())?;
+        if entry.project_dir.is_empty() {
+            return Err("Project directory not set".into());
+        }
+        entry.project_dir.clone()
+    };
 
-    if entry.codex.is_none() {
-        let mut bridge = CodexBridge::new(app.clone(), session_id.clone());
-        bridge.start(&entry.project_dir)?;
-        entry.codex = Some(bridge);
-    }
+    let payload = serde_json::json!({
+        "type": "run",
+        "sessionId": session_id,
+        "payload": input,
+    });
 
-    let result = entry
-        .codex
-        .as_mut()
-        .ok_or_else(|| "Codex session not initialized".to_string())?
-        .send_message(&input);
-    if let Err(err) = &result {
-        eprintln!(
-            "[send_to_codex] session={} project={} error={}",
-            session_id, entry.project_dir, err
-        );
-    } else {
-        eprintln!(
-            "[send_to_codex] session={} project={} ok",
-            session_id, entry.project_dir
-        );
-    }
-    result
+    let mut registry = MODEL_HANDLERS.lock().unwrap();
+    let handler = registry
+        .get_mut("codex")
+        .ok_or_else(|| "Codex handler not registered".to_string())?;
+
+    handler.start(app.clone(), &project_dir)?;
+    handler.send(&serde_json::to_string(&payload).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
 fn interrupt_codex(session_id: String) -> Result<(), String> {
-    let mut sessions = SESSION_MANAGER.lock().unwrap();
-    let entry = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| "Codex session not initialized".to_string())?;
-    if let Some(bridge) = entry.codex.as_mut() {
-        bridge.interrupt()
-    } else {
-        Err("Codex bridge not initialized. Please ensure a project is open.".into())
-    }
+    let payload = serde_json::json!({
+        "type": "interrupt",
+        "sessionId": session_id,
+    });
+
+    let mut registry = MODEL_HANDLERS.lock().unwrap();
+    let handler = registry
+        .get_mut("codex")
+        .ok_or_else(|| "Codex handler not registered".to_string())?;
+
+    handler.send(&serde_json::to_string(&payload).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
@@ -321,29 +334,27 @@ fn resolve_codex_permission(
     allow: bool,
     scope: String,
 ) -> Result<(), String> {
-    let mut sessions = SESSION_MANAGER.lock().unwrap();
-    let entry = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| "Codex session not initialized".to_string())?;
-    if let Some(bridge) = entry.codex.as_mut() {
-        bridge.resolve_permission(&request_id, allow, &scope)
-    } else {
-        Err("Codex bridge not initialized. Please ensure a project is open.".into())
+    let payload = serde_json::json!({
+        "type": "permission",
+        "sessionId": session_id,
+        "requestId": request_id,
+        "allow": allow,
+        "scope": scope,
+    });
+
+    let mut registry = MODEL_HANDLERS.lock().unwrap();
+    if let Some(handler) = registry.get_mut("codex") {
+        let _ = handler.send(&serde_json::to_string(&payload).map_err(|e| e.to_string())?);
     }
+    Ok(())
 }
 
 #[tauri::command]
 fn restart_codex(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
-    let project_dir = {
-        let sessions = SESSION_MANAGER.lock().unwrap();
-        let entry = sessions
-            .get(&session_id)
-            .ok_or_else(|| "Codex session not initialized".to_string())?;
-        entry.project_dir.clone()
-    };
-
     stop_codex(session_id.clone())?;
-    start_codex(app, session_id, project_dir)
+    let project_dir = get_session_project_dir(&session_id)
+        .ok_or_else(|| "Codex session not initialized".to_string())?;
+    start_codex(app, session_id, project_dir, None, None, None)
 }
 
 #[tauri::command]
@@ -394,11 +405,6 @@ fn stop_codex(session_id: String) -> Result<(), String> {
         // Close terminal if exists
         if let Some(term_id) = runtime.terminal_id.take() {
             let _ = TERMINAL_MANAGER.close_terminal(&term_id);
-        }
-
-        // Stop codex bridge
-        if let Some(mut bridge) = runtime.codex.take() {
-            let _ = bridge.stop();
         }
     }
 
@@ -847,8 +853,12 @@ pub fn run() {
             list_checkpoints,
             save_temp_image,
             clone_repo,
-            codex_repo,
-            codex_run
+            start_browser_session,
+            stop_browser_session,
+            browser_navigate,
+            browser_status,
+            webview_create,
+            webview_navigate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

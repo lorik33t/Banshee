@@ -14,6 +14,7 @@ export interface PersistedSession {
   lastUpdated: string
   sessionId?: string
   projectPath?: string
+  threadId?: string
 }
 
 const SESSION_STORAGE_PREFIX = 'claude_session_'
@@ -51,8 +52,15 @@ export function saveSession(data: Partial<PersistedSession>, projectPath?: strin
     if (updated.messages && updated.messages.length > MAX_MESSAGES) {
       updated.messages = updated.messages.slice(-MAX_MESSAGES)
     }
-    
+
     localStorage.setItem(storageKey, JSON.stringify(updated))
+    if (import.meta.env?.DEV) {
+      console.log('[sessionPersistence.saveSession]', storageKey, {
+        messageCount: updated.messages?.length,
+        eventCount: updated.events?.length,
+        threadId: updated.threadId,
+      })
+    }
   } catch (e) {
     console.error('Failed to save session:', e)
   }
@@ -63,6 +71,9 @@ export function loadSession(projectPath?: string): PersistedSession {
     const storageKey = getStorageKey(projectPath)
     const stored = localStorage.getItem(storageKey)
     if (stored) {
+      if (import.meta.env?.DEV) {
+        console.log('[sessionPersistence.loadSession]', storageKey)
+      }
       return JSON.parse(stored)
     }
   } catch (e) {
@@ -77,7 +88,8 @@ export function loadSession(projectPath?: string): PersistedSession {
     edits: [],
     cost: { usd: 0, tokensIn: 0, tokensOut: 0 },
     lastUpdated: new Date().toISOString(),
-    projectPath
+    projectPath,
+    threadId: undefined
   }
 }
 

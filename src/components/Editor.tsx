@@ -74,14 +74,14 @@ export function Editor({
   }
 
   return (
-    <div onPaste={onPaste} style={{ width: '100%' }}>
+    <div onPaste={onPaste} style={{ width: '100%', height: '100%' }}>
       <MonacoEditor
-        height="200px"
+        height="100%"
         language={language}
         value={value}
         onChange={handleChange}
         onMount={handleMount}
-        options={{ minimap: { enabled: false } }}
+        options={{ minimap: { enabled: false }, automaticLayout: true }}
       />
     </div>
   )

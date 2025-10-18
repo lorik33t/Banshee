@@ -46,7 +46,7 @@ export interface ClaudeSettings {
   }>
   
   // UI/UX settings
-  theme?: 'light' | 'dark' | 'system'
+  theme?: 'light' | 'dark' | 'system' | 'retro'
   verbose?: boolean
   statusLine?: {
     type: 'command' | 'static'
@@ -162,36 +162,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
       codex: { enabled: false, displayMode: 'clean', showReasoning: true }
     },
     lspServers: {},
-    // Preconfigure Claude Code subagents so Claude can delegate
-    subAgents: [
-      {
-        name: 'gemini-context',
-        description: 'Large‑context reads/sweeps across many files',
-        tools: ['read', 'grep', 'web'],
-        model: 'gemini',
-        systemPrompt: 'You are a Gemini-powered subagent specialized in handling massive context windows (up to 1M tokens). Prioritize fast file enumeration, targeted reading, and concise summaries suitable for a synthesizer to consume.',
-        enabled: true,
-        isModelAgent: true
-      },
-      {
-        name: 'qwen-automation',
-        description: 'Repository‑scale code operations and automation',
-        tools: ['bash', 'write', 'edit', 'grep'],
-        model: 'qwen',
-        systemPrompt: 'You are a Qwen-powered subagent optimized for repository-scale code operations (bulk edits, refactors, commands). Minimize chatter; output clear diffs and concise results.',
-        enabled: true,
-        isModelAgent: true
-      },
-      {
-        name: 'codex-executor',
-        description: 'Deep planning and analytical reasoning',
-        tools: ['task'],
-        model: 'codex',
-        systemPrompt: 'You are a Codex-powered subagent specializing in careful multi-step reasoning. Produce a short plan and rationale that a synthesizer can integrate.',
-        enabled: true,
-        isModelAgent: true
-      }
-    ]
+    // No sub-agents configured by default
+    subAgents: []
   },
   isOpen: false,
   isLoading: false,

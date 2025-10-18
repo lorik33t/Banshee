@@ -8,6 +8,7 @@ export function useProjectLifecycle() {
   const sessionId = useSession((s) => s.sessionId)
   const sessionMeta = useSession((s) => s.sessionMeta)
   const projectDir = useSession((s) => s.projectDir)
+  const codexThreadId = useSession((s) => s.codexThreadId)
   const createSession = useSession((s) => s.createSession)
   const switchSession = useSession((s) => s.switchSession)
   const closeSession = useSession((s) => s.closeSession)
@@ -33,6 +34,11 @@ export function useProjectLifecycle() {
     }
 
     setProjectDir(path)
+    try {
+      useSession.getState().loadPersistedSession(path)
+    } catch (err) {
+      console.warn('[Lifecycle] Failed to load persisted session', err)
+    }
 
     try {
       const { addProject, setActiveProject, projects } = useWorkspaceStore.getState()
@@ -82,6 +88,16 @@ export function useProjectLifecycle() {
         const id = workspace.addProject({ name, path: projectDir })
         workspace.setActiveProject(id)
       }
+      // Auto start/resume Codex handler for this project
+      if ((window as any).__TAURI__) {
+        invoke('start_codex', {
+          sessionId,
+          projectDir,
+          threadId: codexThreadId ?? null,
+          model: null,
+          sandboxMode: 'workspace-write',
+        }).catch(() => {})
+      }
     } else if (!projectDir && activeProject?.path) {
       // No session project yet; fall back to opening the workspace selection once.
       openProject(activeProject.path)
@@ -89,7 +105,7 @@ export function useProjectLifecycle() {
       lastOpenedPathRef.current = null
       setCodexReady(false)
     }
-  }, [projectDir, activeProject?.path, openProject])
+  }, [projectDir, activeProject?.path, openProject, sessionId, codexThreadId])
 
   useEffect(() => {
     return () => {

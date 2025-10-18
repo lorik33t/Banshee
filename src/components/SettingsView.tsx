@@ -472,8 +472,9 @@ export function SettingsView() {
                   <option value="system">Follow system</option>
                   <option value="light">Light</option>
                   <option value="dark">Dark</option>
+                  <option value="retro">Retro (Banshee)</option>
                 </select>
-                <small>Selecting “Dark” forces the dark palette regardless of OS settings.</small>
+                <small>Select “Retro” for the synthwave palette used on the welcome screen.</small>
               </div>
             </div>
           </div>

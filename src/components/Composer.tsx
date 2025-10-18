@@ -1,114 +1,199 @@
-import { Paperclip, Image as ImageIcon, Mic, Terminal as TerminalIcon, StopCircle, Send, ChevronDown } from 'lucide-react'
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { useSession, queueSessionEvent } from '../state/session'
-import { invoke as tauriInvoke } from '@tauri-apps/api/core'
-import { readTextFile } from '@tauri-apps/plugin-fs'
-import { listen as tauriListen } from '@tauri-apps/api/event'
-import { useSettings } from '../state/settings'
-import { useProjectFiles } from '../hooks/useProjectFiles'
-import type { SessionEvent } from '../state/session'
+import {
+  Paperclip,
+  Image as ImageIcon,
+  Mic,
+  Terminal as TerminalIcon,
+  StopCircle,
+  Send,
+  ChevronDown,
+} from "lucide-react";
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+  useCallback,
+} from "react";
+import { useSession, queueSessionEvent } from "../state/session";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { readTextFile } from "@tauri-apps/plugin-fs";
+import { listen as tauriListen } from "@tauri-apps/api/event";
+import { useSettings } from "../state/settings";
+import { useProjectFiles } from "../hooks/useProjectFiles";
+import type { SessionEvent, BrowserSelectionContext } from "../state/session";
 import {
   CODEX_MODELS,
-  DEFAULT_MODEL_ID,
   DEFAULT_MODE_ID,
   MODE_OPTIONS,
   type ModeOptionId,
-} from '../constants/codex'
+} from "../constants/codex";
 
 const agents = [
   {
-    id: 'codex',
-    name: 'Codex',
-    color: '#10b981',
-    description: 'OpenAI Codex CLI • Streaming'
+    id: "codex",
+    name: "Codex",
+    color: "#10b981",
+    description: "OpenAI Codex CLI • Streaming",
+  },
+];
+const MAX_CONTEXT_RESULTS = 100;
+
+const buildBrowserSelectionContext = (
+  selection: BrowserSelectionContext,
+): string => {
+  const lines: string[] = ["[Embedded Browser Selection]"];
+  if (selection.summary) {
+    lines.push(`Element: ${selection.summary}`);
   }
-]
-const MAX_CONTEXT_RESULTS = 100
+  lines.push(`Selector: ${selection.selector}`);
+  if (selection.url) {
+    lines.push(`URL: ${selection.url}`);
+  }
+  if (selection.textContent) {
+    lines.push(`Visible text: """${selection.textContent}"""`);
+  }
+  if (selection.outerHTML) {
+    lines.push("Outer HTML:");
+    lines.push(selection.outerHTML);
+  }
+  return lines.filter(Boolean).join("\n");
+};
 
 export function Composer() {
-  const [input, setInput] = useState('')
-  const [showAgents, setShowAgents] = useState(false)
-  const [isFocused, setIsFocused] = useState(false)
-  const [attachedImages, setAttachedImages] = useState<Array<{ url: string; name: string }>>([])
-  const [isDragging, setIsDragging] = useState(false)
-  const [showModelMenu, setShowModelMenu] = useState(false)
-  const [showModeMenu, setShowModeMenu] = useState(false)
-  const [contextMenuOpen, setContextMenuOpen] = useState(false)
-  const [contextMenuManual, setContextMenuManual] = useState(false)
-  const [contextQuery, setContextQuery] = useState('')
-  const [contextHighlight, setContextHighlight] = useState(0)
-  const [contextTokens, setContextTokens] = useState<string[]>([])
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const modelMenuRef = useRef<HTMLDivElement>(null)
-  const modelButtonRef = useRef<HTMLButtonElement>(null)
-  const modeMenuRef = useRef<HTMLDivElement>(null)
-  const modeButtonRef = useRef<HTMLButtonElement>(null)
-  const contextButtonRef = useRef<HTMLButtonElement>(null)
-  const contextMenuRef = useRef<HTMLDivElement>(null)
-  const contextSearchRef = useRef<HTMLInputElement>(null)
-  const [activeMention, setActiveMention] = useState<{ start: number; end: number; query: string } | null>(null)
-  const pushEvent = useSession((s) => s.pushEvent)
-  const showTerminal = useSession((s) => s.showTerminal)
-  const setShowTerminal = useSession((s) => s.setShowTerminal)
-  const streamEnabledRef = useRef<boolean>(false)
-  const setAutoAccept = useSession((s) => s.setAutoAccept)
-  const setCodexSelection = useSession((s) => s.setCodexSelection)
-  const contextUsage = useSession((s) => s.contextUsage)
-  const messages = useSession((s) => s.messages)
-  const isStreaming = useSession((s) => s.isStreaming)
-  const sessionId = useSession((s) => s.sessionId)
-  const setStreaming = useSession((s) => s.setStreaming)
-  const projectDir = useSession((s) => s.projectDir)
-  const appSettings = useSettings((s) => s.settings)
-  const { files: projectFiles, loading: filesLoading, error: filesError, hasProject } = useProjectFiles()
+  const [input, setInput] = useState("");
+  const [showAgents, setShowAgents] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<
+    Array<{ url: string; name: string }>
+  >([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showModeMenu, setShowModeMenu] = useState(false);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [contextMenuManual, setContextMenuManual] = useState(false);
+  const [contextQuery, setContextQuery] = useState("");
+  const [contextHighlight, setContextHighlight] = useState(0);
+  const [contextTokens, setContextTokens] = useState<string[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+  const modeButtonRef = useRef<HTMLButtonElement>(null);
+  const contextButtonRef = useRef<HTMLButtonElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const contextSearchRef = useRef<HTMLInputElement>(null);
+  const [activeMention, setActiveMention] = useState<{
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
+  const pushEvent = useSession((s) => s.pushEvent);
+  const showTerminal = useSession((s) => s.showTerminal);
+  const setShowTerminal = useSession((s) => s.setShowTerminal);
+  const streamEnabledRef = useRef<boolean>(false);
+  const setAutoAccept = useSession((s) => s.setAutoAccept);
+  const setCodexSelection = useSession((s) => s.setCodexSelection);
+  const contextUsage = useSession((s) => s.contextUsage);
+  const browserSelection = useSession((s) => s.browserSelection);
+  const clearBrowserSelection = useSession((s) => s.clearBrowserSelection);
+  const markBrowserSelectionUsed = useSession(
+    (s) => s.markBrowserSelectionUsed,
+  );
+  const messages = useSession((s) => s.messages);
+  const isStreaming = useSession((s) => s.isStreaming);
+  const sessionId = useSession((s) => s.sessionId);
+  const setStreaming = useSession((s) => s.setStreaming);
+  const projectDir = useSession((s) => s.projectDir);
+  const codexThreadId = useSession((s) => s.codexThreadId);
+  const appSettings = useSettings((s) => s.settings);
+  const {
+    files: projectFiles,
+    loading: filesLoading,
+    error: filesError,
+    hasProject,
+  } = useProjectFiles();
+
+  // Limit to Codex-only models for vibecoding IDE
+  const CODEX_ONLY = useMemo(
+    () => CODEX_MODELS.filter((m) => m.slug === "gpt-5-codex"),
+    [],
+  );
+
+  const includeBrowserSelection = Boolean(
+    browserSelection && browserSelection.includeInNextMessage !== false,
+  );
+  const hasBrowserSelection = Boolean(browserSelection);
+
+  const browserSelectionLabel = useMemo(() => {
+    if (!browserSelection) return "";
+    const raw = browserSelection.summary || browserSelection.selector || "";
+    return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
+  }, [browserSelection]);
+
+  const browserSelectionTitle = useMemo(() => {
+    if (!browserSelection) return "";
+    const base = browserSelection.selector;
+    return includeBrowserSelection
+      ? base
+      : `${base} (already included in previous request)`;
+  }, [browserSelection, includeBrowserSelection]);
 
   const loadStoredModel = () => {
-    const preferred = appSettings.defaultModelId
-    const fallback = CODEX_MODELS.find((m) => m.id === preferred)?.id
-      ?? CODEX_MODELS.find((m) => m.id === DEFAULT_MODEL_ID)?.id
-      ?? CODEX_MODELS[0].id
-    if (typeof window === 'undefined') return fallback
+    const preferred = appSettings.defaultModelId;
+    const fallback =
+      CODEX_ONLY.find((m) => m.id === preferred)?.id ??
+      CODEX_ONLY.find((m) => m.id === "gpt-5-codex-high")?.id ??
+      CODEX_ONLY[0]?.id;
+    if (typeof window === "undefined") return fallback;
     try {
-      const stored = localStorage.getItem('codex:selected-model')
-      if (stored && CODEX_MODELS.some((m) => m.id === stored)) {
-        return stored
+      const stored = localStorage.getItem("codex:selected-model");
+      if (stored && CODEX_ONLY.some((m) => m.id === stored)) {
+        return stored;
       }
     } catch {}
-    return fallback
-  }
+    return fallback;
+  };
 
-  const [selectedModel, setSelectedModel] = useState<string>(loadStoredModel)
-  const previousDefaultModelRef = useRef(appSettings.defaultModelId)
+  const [selectedModel, setSelectedModel] = useState<string>(loadStoredModel);
+  const previousDefaultModelRef = useRef(appSettings.defaultModelId);
 
-const loadStoredMode = () => {
-    const preferred = appSettings.defaultModeId ?? DEFAULT_MODE_ID
-    if (typeof window === 'undefined') {
-      return preferred
+  const loadStoredMode = () => {
+    const preferred = appSettings.defaultModeId ?? DEFAULT_MODE_ID;
+    if (typeof window === "undefined") {
+      return preferred;
     }
     try {
-      const stored = localStorage.getItem('codex:selected-mode') as ModeOptionId | null
+      const stored = localStorage.getItem(
+        "codex:selected-mode",
+      ) as ModeOptionId | null;
       if (stored && MODE_OPTIONS.some((opt) => opt.id === stored)) {
-        return stored
+        return stored;
       }
     } catch {}
-    return preferred
-  }
+    return preferred;
+  };
 
-  const [selectedMode, setSelectedMode] = useState<ModeOptionId>(loadStoredMode)
-  const previousDefaultModeRef = useRef(appSettings.defaultModeId)
+  const [selectedMode, setSelectedMode] =
+    useState<ModeOptionId>(loadStoredMode);
+  const previousDefaultModeRef = useRef(appSettings.defaultModeId);
 
   const contextInfo = useMemo(() => {
-    if (!contextUsage) return undefined
-    const remainingPct = contextUsage.remainingPct ?? (contextUsage.usedPct != null ? 100 - contextUsage.usedPct : undefined)
-    const usedPct = contextUsage.usedPct ?? (remainingPct != null ? 100 - remainingPct : undefined)
-    const clamp = (value: number) => Math.min(100, Math.max(0, value))
-    const percentUsed = usedPct != null ? clamp(usedPct) : undefined
-    const percentLeft = remainingPct != null ? clamp(remainingPct) : undefined
-    const radius = 9
-    const circumference = 2 * Math.PI * radius
-    const dashOffset = percentUsed != null ? circumference * (1 - percentUsed / 100) : undefined
+    if (!contextUsage) return undefined;
+    const remainingPct =
+      contextUsage.remainingPct ??
+      (contextUsage.usedPct != null ? 100 - contextUsage.usedPct : undefined);
+    const usedPct =
+      contextUsage.usedPct ??
+      (remainingPct != null ? 100 - remainingPct : undefined);
+    const clamp = (value: number) => Math.min(100, Math.max(0, value));
+    const percentUsed = usedPct != null ? clamp(usedPct) : undefined;
+    const percentLeft = remainingPct != null ? clamp(remainingPct) : undefined;
+    const radius = 9;
+    const circumference = 2 * Math.PI * radius;
+    const dashOffset =
+      percentUsed != null ? circumference * (1 - percentUsed / 100) : undefined;
     return {
       percentUsed,
       percentLeft,
@@ -119,686 +204,883 @@ const loadStoredMode = () => {
       circumference,
       radius,
       dashOffset,
-    }
-  }, [contextUsage])
+    };
+  }, [contextUsage]);
 
   const contextTokenForPath = useCallback((relativePath: string) => {
-    const normalized = relativePath.replace(/^\.\//, '')
-    return /\s/.test(normalized) ? `@"${normalized}"` : `@${normalized}`
-  }, [])
+    const normalized = relativePath.replace(/^\.\//, "");
+    return /\s/.test(normalized) ? `@"${normalized}"` : `@${normalized}`;
+  }, []);
 
   const stripContextTokens = useCallback((value: string) => {
     return value
-      .replace(/@"([^"\n]+)"/g, '')
-      .replace(/@([^\s@]+)/g, '')
-      .replace(/\s{2,}/g, ' ')
-      .trimStart()
-  }, [])
+      .replace(/@"([^"\n]+)"/g, "")
+      .replace(/@([^\s@]+)/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trimStart();
+  }, []);
 
   const findActiveMention = useCallback((value: string, cursor: number) => {
-    let index = cursor - 1
+    let index = cursor - 1;
     while (index >= 0 && !/\s/.test(value[index])) {
-      index -= 1
+      index -= 1;
     }
-    const start = Math.max(0, index + 1)
-    if (start < value.length && value[start] === '@') {
-      const end = cursor
-      const query = value.slice(start + 1, end)
-      return { start, end, query }
+    const start = Math.max(0, index + 1);
+    if (start < value.length && value[start] === "@") {
+      const end = cursor;
+      const query = value.slice(start + 1, end);
+      return { start, end, query };
     }
-    return null
-  }, [])
+    return null;
+  }, []);
 
   const contextMatches = useMemo(() => {
-    if (!contextMenuOpen) return []
+    if (!contextMenuOpen) return [];
     if (!contextQuery.trim()) {
-      return projectFiles.slice(0, MAX_CONTEXT_RESULTS)
+      return projectFiles.slice(0, MAX_CONTEXT_RESULTS);
     }
-    const needle = contextQuery.trim().toLowerCase()
-    const filtered = projectFiles.filter((filePath) => filePath.toLowerCase().includes(needle))
-    return filtered.slice(0, MAX_CONTEXT_RESULTS)
-  }, [contextMenuOpen, projectFiles, contextQuery])
+    const needle = contextQuery.trim().toLowerCase();
+    const filtered = projectFiles.filter((filePath) =>
+      filePath.toLowerCase().includes(needle),
+    );
+    return filtered.slice(0, MAX_CONTEXT_RESULTS);
+  }, [contextMenuOpen, projectFiles, contextQuery]);
 
   const formatTokens = (value?: number) => {
-    if (value === undefined || value === null) return ''
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
-    if (value >= 10_000) return `${Math.round(value / 1_000)}k`
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-    return String(Math.round(value))
-  }
+    if (value === undefined || value === null) return "";
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+    if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+    return String(Math.round(value));
+  };
 
-// -- helpers ----------------------------------------------------------------
+  // -- helpers ----------------------------------------------------------------
   const adjustTextareaHeight = useCallback(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    const next = Math.min(200, Math.max(36, el.scrollHeight))
-    el.style.height = `${next}px`
-  }, [])
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(200, Math.max(36, el.scrollHeight));
+    el.style.height = `${next}px`;
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      if (!detail || typeof detail.text !== "string") return;
+      setInput(detail.text);
+      adjustTextareaHeight();
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+
+    window.addEventListener("composer:rerun", handler as EventListener);
+    return () =>
+      window.removeEventListener("composer:rerun", handler as EventListener);
+  }, [adjustTextareaHeight]);
 
   const updateMentionState = useCallback(
     (value: string, cursor?: number | null) => {
       if (cursor === null || cursor === undefined) {
         if (!contextMenuManual) {
-          setActiveMention(null)
-          setContextMenuOpen(false)
-          setContextQuery('')
-          setShowAgents(false)
+          setActiveMention(null);
+          setContextMenuOpen(false);
+          setContextQuery("");
+          setShowAgents(false);
         }
-        return
+        return;
       }
 
-      const mention = findActiveMention(value, cursor)
+      const mention = findActiveMention(value, cursor);
       if (mention) {
-        setActiveMention(mention)
-        setContextQuery(mention.query)
-        setContextMenuManual(false)
-        setContextMenuOpen(true)
-        setContextHighlight(0)
+        setActiveMention(mention);
+        setContextQuery(mention.query);
+        setContextMenuManual(false);
+        setContextMenuOpen(true);
+        setContextHighlight(0);
 
-        const normalized = mention.query.toLowerCase()
+        const normalized = mention.query.toLowerCase();
         const shouldShowAgents =
-          normalized.length > 0 && agents.some((agent) => agent.id.toLowerCase().startsWith(normalized))
-        setShowAgents(shouldShowAgents)
+          normalized.length > 0 &&
+          agents.some((agent) => agent.id.toLowerCase().startsWith(normalized));
+        setShowAgents(shouldShowAgents);
       } else if (!contextMenuManual) {
-        setActiveMention(null)
-        setContextMenuOpen(false)
-        setContextQuery('')
-        setShowAgents(false)
+        setActiveMention(null);
+        setContextMenuOpen(false);
+        setContextQuery("");
+        setShowAgents(false);
       }
     },
-    [contextMenuManual, findActiveMention, agents]
-  )
+    [contextMenuManual, findActiveMention, agents],
+  );
 
   const updateInputValue = useCallback(
     (value: string, cursor?: number | null) => {
-      setInput(value)
-      adjustTextareaHeight()
-      updateMentionState(value, cursor ?? value.length)
+      setInput(value);
+      adjustTextareaHeight();
+      updateMentionState(value, cursor ?? value.length);
     },
-    [adjustTextareaHeight, updateMentionState]
-  )
+    [adjustTextareaHeight, updateMentionState],
+  );
 
   const applyContextToken = useCallback(
-    (token: string, options?: { mention?: { start: number; end: number }; focus?: boolean }) => {
-      const { mention, focus = true } = options ?? {}
-      setContextTokens((prev) => (prev.includes(token) ? prev : [...prev, token]))
+    (
+      token: string,
+      options?: { mention?: { start: number; end: number }; focus?: boolean },
+    ) => {
+      const { mention, focus = true } = options ?? {};
+      setContextTokens((prev) =>
+        prev.includes(token) ? prev : [...prev, token],
+      );
 
-      let base = input
+      let base = input;
       if (mention) {
-        base = input.slice(0, mention.start) + input.slice(mention.end)
+        base = input.slice(0, mention.start) + input.slice(mention.end);
       }
-      base = stripContextTokens(base)
-      base = base.replace(/\s{2,}/g, ' ').trim()
-      const next = base.length ? `${base} ` : ''
+      base = stripContextTokens(base);
+      base = base.replace(/\s{2,}/g, " ").trim();
+      const next = base.length ? `${base} ` : "";
 
-      setActiveMention(null)
-      setShowAgents(false)
-      setContextMenuOpen(false)
-      setContextMenuManual(false)
-      updateInputValue(next, next.length)
+      setActiveMention(null);
+      setShowAgents(false);
+      setContextMenuOpen(false);
+      setContextMenuManual(false);
+      updateInputValue(next, next.length);
 
       if (focus) {
-        setTimeout(() => textareaRef.current?.focus(), 0)
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
     },
-    [input, stripContextTokens, updateInputValue]
-  )
-
-
-  useEffect(() => {
-    adjustTextareaHeight()
-  }, [adjustTextareaHeight, input])
-
-useEffect(() => {
-  try { localStorage.setItem('codex:selected-model', selectedModel) } catch {}
-}, [selectedModel])
-
-useEffect(() => {
-  const preferred = appSettings.defaultModelId
-  if (!preferred || previousDefaultModelRef.current === preferred) return
-  previousDefaultModelRef.current = preferred
-  if (CODEX_MODELS.some((model) => model.id === preferred)) {
-    setSelectedModel(preferred)
-    try { localStorage.setItem('codex:selected-model', preferred) } catch {}
-  }
-}, [appSettings.defaultModelId])
+    [input, stripContextTokens, updateInputValue],
+  );
 
   useEffect(() => {
-    setCodexSelection({ modelId: selectedModel })
-  }, [selectedModel, setCodexSelection])
+    adjustTextareaHeight();
+  }, [adjustTextareaHeight, input]);
 
   useEffect(() => {
-    if (!showModelMenu) return
-    const handleClick = (event: MouseEvent) => {
-      const target = event.target as Node
-      if (modelMenuRef.current?.contains(target) || modelButtonRef.current?.contains(target)) {
-        return
-      }
-      setShowModelMenu(false)
+    try {
+      localStorage.setItem("codex:selected-model", selectedModel);
+    } catch {}
+  }, [selectedModel]);
+
+  useEffect(() => {
+    const preferred = appSettings.defaultModelId;
+    if (!preferred || previousDefaultModelRef.current === preferred) return;
+    previousDefaultModelRef.current = preferred;
+    if (CODEX_ONLY.some((model) => model.id === preferred)) {
+      setSelectedModel(preferred);
+      try {
+        localStorage.setItem("codex:selected-model", preferred);
+      } catch {}
     }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [showModelMenu])
+  }, [appSettings.defaultModelId]);
 
   useEffect(() => {
-    if (!showModeMenu) return
+    setCodexSelection({ modelId: selectedModel });
+  }, [selectedModel, setCodexSelection]);
+
+  useEffect(() => {
+    if (!showModelMenu) return;
     const handleClick = (event: MouseEvent) => {
-      const target = event.target as Node
-      if (modeMenuRef.current?.contains(target) || modeButtonRef.current?.contains(target)) {
-        return
+      const target = event.target as Node;
+      if (
+        modelMenuRef.current?.contains(target) ||
+        modelButtonRef.current?.contains(target)
+      ) {
+        return;
       }
-      setShowModeMenu(false)
+      setShowModelMenu(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showModelMenu]);
+
+  useEffect(() => {
+    if (!showModeMenu) return;
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        modeMenuRef.current?.contains(target) ||
+        modeButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setShowModeMenu(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showModeMenu]);
+
+  useEffect(() => {
+    const option =
+      MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0];
+    try {
+      localStorage.setItem("codex:selected-mode", option.id);
+    } catch {}
+    setAutoAccept(option.autoAccept);
+    setCodexSelection({ modeId: option.id });
+  }, [selectedMode, setAutoAccept, setCodexSelection]);
+
+  useEffect(() => {
+    const preferred = appSettings.defaultModeId;
+    if (!preferred || previousDefaultModeRef.current === preferred) return;
+    previousDefaultModeRef.current = preferred;
+    if (MODE_OPTIONS.some((opt) => opt.id === preferred)) {
+      setSelectedMode(preferred);
+      try {
+        localStorage.setItem("codex:selected-mode", preferred);
+      } catch {}
     }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [showModeMenu])
-
-useEffect(() => {
-  const option = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
-  try { localStorage.setItem('codex:selected-mode', option.id) } catch {}
-  setAutoAccept(option.autoAccept)
-  setCodexSelection({ modeId: option.id })
-}, [selectedMode, setAutoAccept, setCodexSelection])
-
-useEffect(() => {
-  const preferred = appSettings.defaultModeId
-  if (!preferred || previousDefaultModeRef.current === preferred) return
-  previousDefaultModeRef.current = preferred
-  if (MODE_OPTIONS.some((opt) => opt.id === preferred)) {
-    setSelectedMode(preferred)
-    try { localStorage.setItem('codex:selected-mode', preferred) } catch {}
-  }
-}, [appSettings.defaultModeId])
+  }, [appSettings.defaultModeId]);
 
   // Handle image paste on the textarea
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items
-    if (!items) return
+    const items = e.clipboardData?.items;
+    if (!items) return;
 
-    let handled = false
+    let handled = false;
     for (const item of Array.from(items)) {
-      if (item.type.startsWith('image/')) {
-        handled = true
-        const file = item.getAsFile()
+      if (item.type.startsWith("image/")) {
+        handled = true;
+        const file = item.getAsFile();
         if (file) {
-          const reader = new FileReader()
+          const reader = new FileReader();
           reader.onload = (event) => {
-            const dataUrl = event.target?.result as string
-            setAttachedImages(prev => [...prev, {
-              url: dataUrl,
-              name: `image-${Date.now()}.${file.type.split('/')[1]}`
-            }])
-          }
-          reader.readAsDataURL(file)
+            const dataUrl = event.target?.result as string;
+            setAttachedImages((prev) => [
+              ...prev,
+              {
+                url: dataUrl,
+                name: `image-${Date.now()}.${file.type.split("/")[1]}`,
+              },
+            ]);
+          };
+          reader.readAsDataURL(file);
         }
       }
     }
-    if (handled) e.preventDefault()
-  }
+    if (handled) e.preventDefault();
+  };
 
   // Handle drag and drop
   const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragging(true)
-  }
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
 
   const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragging(false)
-  }
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
 
   const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragging(false)
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
 
-    const files = Array.from(e.dataTransfer.files)
-    files.forEach(file => {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader()
+    const files = Array.from(e.dataTransfer.files);
+    files.forEach((file) => {
+      if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
         reader.onload = (event) => {
-          const dataUrl = event.target?.result as string
-          setAttachedImages(prev => [...prev, { url: dataUrl, name: file.name }])
-        }
-        reader.readAsDataURL(file)
+          const dataUrl = event.target?.result as string;
+          setAttachedImages((prev) => [
+            ...prev,
+            { url: dataUrl, name: file.name },
+          ]);
+        };
+        reader.readAsDataURL(file);
       }
-    })
-  }
+    });
+  };
 
   // Listen for Codex stream events once on mount
   useEffect(() => {
-    let mounted = true
-    const unlisten: Array<() => void> = []
+    let mounted = true;
+    const unlisten: Array<() => void> = [];
+
+    const normalizePayload = (value: unknown): any => {
+      if (value == null) return null;
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed.length) return null;
+        const tryParse = (candidate: string) => {
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            return null;
+          }
+        };
+
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+          const parsed = tryParse(trimmed);
+          if (parsed !== null) return parsed;
+        }
+
+        const firstBrace = trimmed.indexOf("{");
+        const lastBrace = trimmed.lastIndexOf("}");
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+          const parsed = tryParse(trimmed.slice(firstBrace, lastBrace + 1));
+          if (parsed !== null) return parsed;
+        }
+
+        const firstBracket = trimmed.indexOf("[");
+        const lastBracket = trimmed.lastIndexOf("]");
+        if (firstBracket >= 0 && lastBracket > firstBracket) {
+          const parsed = tryParse(trimmed.slice(firstBracket, lastBracket + 1));
+          if (parsed !== null) return parsed;
+        }
+
+        return null;
+      }
+      return value;
+    };
 
     const handleStreamPayload = (event: { payload: unknown }) => {
-      if (!mounted) return
-      const raw = event?.payload
-      const events = Array.isArray(raw) ? raw : [raw]
+      if (!mounted) return;
+      const root = normalizePayload(event?.payload);
+      const events = Array.isArray(root) ? root : [root];
       events.forEach((ev) => {
-        const payload = ev as any
-        if (!payload) return
-        const eventSessionId = typeof payload.sessionId === 'string' ? (payload.sessionId as string) : undefined
-        const targetSessionId = eventSessionId || sessionId
-        const data = { ...payload } as SessionEvent & { sessionId?: string }
-        delete (data as any).sessionId
+        const payload = normalizePayload(ev);
+        if (!payload) return;
+        const eventSessionId =
+          typeof payload.sessionId === "string"
+            ? (payload.sessionId as string)
+            : undefined;
+        const targetSessionId = eventSessionId || sessionId;
+        const data = { ...payload } as SessionEvent & { sessionId?: string };
+        delete (data as any).sessionId;
         if (targetSessionId !== sessionId) {
-          queueSessionEvent(targetSessionId, data)
-          return
+          queueSessionEvent(targetSessionId, data);
+          return;
         }
-        if (data.type === 'assistant:delta') {
+        if (data.type === "assistant:delta") {
           if (!isStreaming) {
-            setStreaming(true)
+            console.log(
+              "[Composer] setStreaming(true) because delta arrived",
+              data,
+            );
+            setStreaming(true);
           }
-          pushEvent(data)
-        } else if (data.type === 'assistant:complete') {
-          setStreaming(false)
-          streamEnabledRef.current = false
-          pushEvent(data)
+          pushEvent(data);
+        } else if (data.type === "assistant:complete") {
+          console.log(
+            "[Composer] setStreaming(false) because completion arrived",
+            data,
+          );
+          setStreaming(false);
+          streamEnabledRef.current = false;
+          pushEvent(data);
         } else {
-          pushEvent(data)
+          pushEvent(data);
         }
-      })
-    }
+      });
+    };
 
     const handleError = (ev?: any) => {
       try {
-        const raw = (ev && (ev.payload ?? ev)) || ''
-        const payload = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : undefined
-        const eventSessionId = typeof payload?.sessionId === 'string' ? (payload.sessionId as string) : undefined
-        const targetSessionId = eventSessionId || sessionId
-        const message = typeof payload?.message === 'string' ? (payload.message as string) : undefined
-        const text = message || (typeof raw === 'string' ? raw : JSON.stringify(raw))
-        if (!text) return
+        const raw = (ev && (ev.payload ?? ev)) || "";
+        const payload = normalizePayload(raw) as Record<string, unknown> | null;
+        const eventSessionId =
+          typeof payload?.sessionId === "string"
+            ? (payload.sessionId as string)
+            : undefined;
+        const targetSessionId = eventSessionId || sessionId;
+        const message =
+          typeof payload?.message === "string"
+            ? (payload.message as string)
+            : undefined;
+        const text =
+          message || (typeof raw === "string" ? raw : JSON.stringify(raw));
+        if (!text) return;
 
         if (targetSessionId !== sessionId) {
-          queueSessionEvent(targetSessionId, { id: String(Date.now()), type: 'message', role: 'assistant', text, ts: Date.now() } as any)
-          return
+          queueSessionEvent(targetSessionId, {
+            id: String(Date.now()),
+            type: "message",
+            role: "assistant",
+            text,
+            ts: Date.now(),
+          } as any);
+          return;
         }
 
         if (/submission queue closed/i.test(text)) {
-          pushEvent({ id: String(Date.now()), type: 'message', role: 'assistant', text: '⚠️ Codex CLI closed the submission queue before responding.', ts: Date.now() } as any)
-          setStreaming(false)
-          streamEnabledRef.current = false
-          return
+          pushEvent({
+            id: String(Date.now()),
+            type: "message",
+            role: "assistant",
+            text: "⚠️ Codex CLI closed the submission queue before responding.",
+            ts: Date.now(),
+          } as any);
+          setStreaming(false);
+          streamEnabledRef.current = false;
+          return;
         }
 
-        if (/saving session/i.test(text) || /completed\.?$/i.test(text.trim())) {
-          setStreaming(false)
-          streamEnabledRef.current = false
-          return
+        if (
+          /saving session/i.test(text) ||
+          /completed\.?$/i.test(text.trim())
+        ) {
+          setStreaming(false);
+          streamEnabledRef.current = false;
+          return;
         }
 
-        if (/error|invalid|missing|unauthorized|forbidden|denied|timed out|timeout|failed|not found/i.test(text)) {
-          pushEvent({ id: String(Date.now()), type: 'message', role: 'assistant', text: `⚠️ ${text}`, ts: Date.now() } as any)
-          setStreaming(false)
-          streamEnabledRef.current = false
+        if (
+          /error|invalid|missing|unauthorized|forbidden|denied|timed out|timeout|failed|not found/i.test(
+            text,
+          )
+        ) {
+          pushEvent({
+            id: String(Date.now()),
+            type: "message",
+            role: "assistant",
+            text: `⚠️ ${text}`,
+            ts: Date.now(),
+          } as any);
+          setStreaming(false);
+          streamEnabledRef.current = false;
         }
       } catch {}
-    }
+    };
 
-    tauriListen('codex:stream', handleStreamPayload).then((fn) => {
-      if (mounted) unlisten.push(fn)
-    })
-    tauriListen('codex:error', handleError).then((fn) => {
-      if (mounted) unlisten.push(fn)
-    })
+    tauriListen("codex:stream", handleStreamPayload).then((fn) => {
+      if (mounted) unlisten.push(fn);
+    });
+    tauriListen("codex:error", handleError).then((fn) => {
+      if (mounted) unlisten.push(fn);
+    });
 
     return () => {
-      mounted = false
-      unlisten.forEach((fn) => fn && fn())
-    }
-  }, [isStreaming, pushEvent, setStreaming, sessionId])
+      mounted = false;
+      unlisten.forEach((fn) => fn && fn());
+    };
+  }, [isStreaming, pushEvent, setStreaming, sessionId]);
 
-  const handleTextareaChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const { value, selectionStart } = event.target
-    updateInputValue(value, selectionStart ?? value.length)
-  }
+  const handleTextareaChange = (
+    event: React.ChangeEvent<HTMLTextAreaElement>,
+  ) => {
+    const { value, selectionStart } = event.target;
+    updateInputValue(value, selectionStart ?? value.length);
+  };
 
   const fallbackContextMention = () => {
-    const needsSpace = input.length > 0 && !input.endsWith(' ') && !input.endsWith('@')
-    const needsAt = !input.endsWith('@')
-    const nextValue = `${input}${needsSpace ? ' ' : ''}${needsAt ? '@' : ''}`
-    updateInputValue(nextValue, nextValue.length)
-    setShowAgents(true)
-    setTimeout(() => textareaRef.current?.focus(), 0)
-  }
+    const needsSpace =
+      input.length > 0 && !input.endsWith(" ") && !input.endsWith("@");
+    const needsAt = !input.endsWith("@");
+    const nextValue = `${input}${needsSpace ? " " : ""}${needsAt ? "@" : ""}`;
+    updateInputValue(nextValue, nextValue.length);
+    setShowAgents(true);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
 
   const handleAddContext = () => {
     if (!(window as any).__TAURI__) {
-      fallbackContextMention()
-      return
+      fallbackContextMention();
+      return;
     }
 
     if (!hasProject) {
-      fallbackContextMention()
-      return
+      fallbackContextMention();
+      return;
     }
 
-    setShowAgents(false)
+    setShowAgents(false);
     setContextMenuOpen((prev) => {
-      const next = !prev
+      const next = !prev;
       if (next) {
-        setContextMenuManual(true)
-        setContextQuery('')
-        setContextHighlight(0)
-        setTimeout(() => contextSearchRef.current?.focus(), 0)
+        setContextMenuManual(true);
+        setContextQuery("");
+        setContextHighlight(0);
+        setTimeout(() => contextSearchRef.current?.focus(), 0);
       } else {
-        setContextMenuManual(false)
+        setContextMenuManual(false);
       }
-      return next
-    })
-  }
+      return next;
+    });
+  };
 
   const handleSelectContext = (relativePath: string) => {
-    const token = contextTokenForPath(relativePath)
+    const token = contextTokenForPath(relativePath);
     if (activeMention) {
-      applyContextToken(token, { mention: activeMention })
+      applyContextToken(token, { mention: activeMention });
     } else {
-      applyContextToken(token)
+      applyContextToken(token);
     }
-  }
+  };
 
-  const handleContextKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!contextMenuOpen) return
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      if (!contextMatches.length) return
+  const handleContextKeyDown = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (!contextMenuOpen) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!contextMatches.length) return;
       setContextHighlight((prev) => {
-        const next = prev + 1
-        return next >= contextMatches.length ? contextMatches.length - 1 : next
-      })
-      return
+        const next = prev + 1;
+        return next >= contextMatches.length ? contextMatches.length - 1 : next;
+      });
+      return;
     }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      if (!contextMatches.length) return
-      setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1))
-      return
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!contextMatches.length) return;
+      setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1));
+      return;
     }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      const targetPath = contextMatches[contextHighlight] ?? contextMatches[0]
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const targetPath = contextMatches[contextHighlight] ?? contextMatches[0];
       if (targetPath) {
-        handleSelectContext(targetPath)
+        handleSelectContext(targetPath);
       }
     }
-    if (event.key === 'Escape') {
-      setContextMenuOpen(false)
-      setContextMenuManual(false)
-      contextButtonRef.current?.focus()
+    if (event.key === "Escape") {
+      setContextMenuOpen(false);
+      setContextMenuManual(false);
+      contextButtonRef.current?.focus();
     }
-  }
+  };
 
   const removeContextToken = useCallback(
     (token: string) => {
-      setContextTokens((prev) => prev.filter((t) => t !== token))
-      const cleaned = stripContextTokens(input).replace(/\s{2,}/g, ' ').trim()
-      const next = cleaned.length ? `${cleaned} ` : ''
-      updateInputValue(next, next.length)
+      setContextTokens((prev) => prev.filter((t) => t !== token));
+      const cleaned = stripContextTokens(input)
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      const next = cleaned.length ? `${cleaned} ` : "";
+      updateInputValue(next, next.length);
     },
-    [input, stripContextTokens, updateInputValue]
-  )
+    [input, stripContextTokens, updateInputValue],
+  );
 
   useEffect(() => {
-    if (!contextMenuOpen) return
+    if (!contextMenuOpen) return;
 
     const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node | null
-      if (!target) return
-      if (contextMenuRef.current?.contains(target)) return
-      if (contextButtonRef.current?.contains(target)) return
-      setContextMenuOpen(false)
-      setContextMenuManual(false)
-      setActiveMention(null)
-    }
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (contextMenuRef.current?.contains(target)) return;
+      if (contextButtonRef.current?.contains(target)) return;
+      setContextMenuOpen(false);
+      setContextMenuManual(false);
+      setActiveMention(null);
+    };
 
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener("mousedown", handleClickOutside);
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-    }
-  }, [contextMenuOpen])
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [contextMenuOpen]);
 
   useEffect(() => {
-    if (!contextMenuOpen) return
+    if (!contextMenuOpen) return;
     if (!contextMatches.length) {
-      setContextHighlight(-1)
-      return
+      setContextHighlight(-1);
+      return;
     }
     setContextHighlight((prev) => {
-      if (prev < 0) return 0
-      if (prev >= contextMatches.length) return contextMatches.length - 1
-      return prev
-    })
-  }, [contextMenuOpen, contextMatches])
+      if (prev < 0) return 0;
+      if (prev >= contextMatches.length) return contextMatches.length - 1;
+      return prev;
+    });
+  }, [contextMenuOpen, contextMatches]);
 
   useEffect(() => {
     if (!hasProject) {
-      setContextMenuOpen(false)
-      setContextMenuManual(false)
-      setActiveMention(null)
+      setContextMenuOpen(false);
+      setContextMenuManual(false);
+      setActiveMention(null);
     }
-  }, [hasProject])
+  }, [hasProject]);
 
   useEffect(() => {
     if (activeMention) {
-      setContextQuery(activeMention.query)
-      setContextMenuManual(false)
-      setContextMenuOpen(true)
-      setContextHighlight(0)
+      setContextQuery(activeMention.query);
+      setContextMenuManual(false);
+      setContextMenuOpen(true);
+      setContextHighlight(0);
     } else if (!contextMenuManual) {
-      setContextMenuOpen(false)
-      setContextQuery('')
+      setContextMenuOpen(false);
+      setContextQuery("");
     }
-  }, [activeMention, contextMenuManual])
+  }, [activeMention, contextMenuManual]);
 
   const toggleModelMenu = () => {
     setShowModelMenu((prev) => {
-      const next = !prev
-      if (next) setShowModeMenu(false)
-      return next
-    })
-  }
+      const next = !prev;
+      if (next) setShowModeMenu(false);
+      return next;
+    });
+  };
 
   const toggleModeMenu = () => {
     setShowModeMenu((prev) => {
-      const next = !prev
-      if (next) setShowModelMenu(false)
-      return next
-    })
-  }
+      const next = !prev;
+      if (next) setShowModelMenu(false);
+      return next;
+    });
+  };
 
   const handleSend = async () => {
-    const rawText = input.trim()
-    if ((rawText.length === 0 && contextTokens.length === 0 && attachedImages.length === 0) || isStreaming) {
-      return
+    const rawText = input.trim();
+    if (
+      (rawText.length === 0 &&
+        contextTokens.length === 0 &&
+        attachedImages.length === 0) ||
+      isStreaming
+    ) {
+      return;
     }
 
-    const cleanText = rawText.replace(/^@codex(?=[\s:.,-]|$)[\s:.,-]*/i, '').trim()
-    const tokensText = contextTokens.join(' ')
-    const combinedText = [cleanText, tokensText].filter(Boolean).join(cleanText && tokensText ? ' ' : '')
-    const content: any[] = []
+    const cleanText = rawText
+      .replace(/^@codex(?=[\s:.,-]|$)[\s:.,-]*/i, "")
+      .trim();
+    const tokensText = contextTokens.join(" ");
+    const combinedText = [cleanText, tokensText]
+      .filter(Boolean)
+      .join(cleanText && tokensText ? " " : "");
+    const content: any[] = [];
     if (combinedText) {
-      content.push({ type: 'text', text: combinedText })
+      content.push({ type: "text", text: combinedText });
     }
-    attachedImages.forEach(img => {
-      content.push({ type: 'image', url: img.url, name: img.name })
-    })
+    attachedImages.forEach((img) => {
+      content.push({ type: "image", url: img.url, name: img.name });
+    });
 
-    setInput('')
-    setAttachedImages([])
-    setContextTokens([])
-    setShowAgents(false)
-    setShowModelMenu(false)
+    let finalText = combinedText;
+    let finalContent = [...content];
+    let selectionContextBlock: string | null = null;
+    if (includeBrowserSelection && browserSelection) {
+      const block = buildBrowserSelectionContext(browserSelection);
+      if (block.trim().length > 0) {
+        selectionContextBlock = block;
+        finalText = finalText ? `${finalText}\n\n${block}` : block;
+        if (
+          finalContent.length > 0 &&
+          finalContent[0]?.type === "text" &&
+          typeof finalContent[0].text === "string"
+        ) {
+          finalContent[0] = { ...finalContent[0], text: finalText };
+        } else if (finalContent.length === 0) {
+          finalContent.push({ type: "text", text: finalText });
+        } else {
+          finalContent = [{ type: "text", text: finalText }, ...finalContent];
+        }
+      }
+    }
+
+    setInput("");
+    setAttachedImages([]);
+    setContextTokens([]);
+    setShowAgents(false);
+    setShowModelMenu(false);
     // no-op; popover closes
 
     const userEvent = {
       id: String(Date.now()),
-      type: 'message',
-      role: 'user',
-      text: combinedText || tokensText || '[Image]',
-      content,
+      type: "message",
+      role: "user",
+      text: finalText || tokensText || "[Image]",
+      content: finalContent,
       ts: Date.now(),
-      model: currentModel.slug
-    } as any
-    pushEvent(userEvent)
+      model: currentModel.slug,
+    } as any;
+    pushEvent(userEvent);
 
-    const streamMessageId = `assistant-${Date.now()}`
-    streamEnabledRef.current = true
-    setStreaming(true, currentModel.slug, streamMessageId)
+    if (selectionContextBlock) {
+      markBrowserSelectionUsed();
+    }
 
-    const imagePaths: string[] = []
+    const streamMessageId = `assistant-${Date.now()}`;
+    streamEnabledRef.current = true;
+    setStreaming(true, currentModel.slug, streamMessageId);
+
+    const imagePaths: string[] = [];
     for (const img of attachedImages) {
       try {
-        const path = await tauriInvoke<string>('save_temp_image', {
+        const path = await tauriInvoke<string>("save_temp_image", {
           base64Data: img.url,
-          filename: img.name
-        })
-        imagePaths.push(path)
+          filename: img.name,
+        });
+        imagePaths.push(path);
       } catch (err) {
-        console.error('Failed to save image:', err)
+        console.error("Failed to save image:", err);
       }
     }
 
-    let messageText = combinedText
+    let messageText = finalText || combinedText;
     if (imagePaths.length > 0) {
-      messageText = `${combinedText} ${imagePaths.join(' ')}`.trim()
+      messageText = `${messageText} ${imagePaths.join(" ")}`.trim();
     }
 
-    let memoryText = ''
+    let memoryText = "";
     if (projectDir) {
       const candidates = [
         `${projectDir}/GEMINI.md`,
         `${projectDir}/CLAUDE.md`,
         `${projectDir}/.gemini/GEMINI.md`,
-        `${projectDir}/.claude/CLAUDE.md`
-      ]
+        `${projectDir}/.claude/CLAUDE.md`,
+      ];
       for (const p of candidates) {
         try {
-          const txt = await readTextFile(p)
-          if (txt && txt.trim().length > 0) { memoryText = txt; break }
+          const txt = await readTextFile(p);
+          if (txt && txt.trim().length > 0) {
+            memoryText = txt;
+            break;
+          }
         } catch (_) {}
       }
     }
 
-    const buildComposedPrompt = (recentMessages: typeof messages, userText: string, memory?: string) => {
-      const MAX_TURNS = 10
+    const buildComposedPrompt = (
+      recentMessages: typeof messages,
+      userText: string,
+      memory?: string,
+    ) => {
+      const MAX_TURNS = 10;
       const history = recentMessages
         .slice(-MAX_TURNS)
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
-        .join('\n')
-      const sections: string[] = [
-        'System: You are an AI coding assistant. Continue the conversation based on the context below. Keep responses concise unless asked otherwise.'
-      ]
-      if (memory && memory.trim().length > 0) {
-        sections.push('--- Project Memory ---')
-        sections.push(memory.trim())
-      }
-      sections.push('--- Conversation (recent) ---')
-      sections.push(history || '[No prior messages]')
-      const header = sections.join('\n')
-      return `${header}\n\nUser: ${userText}\nAssistant:`
-    }
+        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`)
+        .join("\n");
 
-    const composedPrompt = buildComposedPrompt(messages, messageText, memoryText)
+      const sections: string[] = [];
+      if (memory && memory.trim().length > 0) {
+        sections.push("Project Memory:\n" + memory.trim());
+      }
+
+      sections.push(
+        "Recent Conversation:\n" + (history || "[No prior messages]"),
+      );
+      sections.push(`User: ${userText}`);
+      sections.push("Assistant:");
+
+      return sections.join("\n\n");
+    };
+
+    const composedPrompt = buildComposedPrompt(
+      messages,
+      messageText,
+      memoryText,
+    );
     const payload: any = {
       currentMessage: composedPrompt,
       images: imagePaths,
       model: currentModel.slug,
       approvalPolicy: currentMode.approvalPolicy,
-      sandboxMode: currentMode.sandboxMode
-    }
+      sandboxMode: currentMode.sandboxMode,
+    };
     if (currentModel.effort) {
-      payload.effort = currentModel.effort
+      payload.effort = currentModel.effort;
     }
-    const codexCfg = appSettings?.agents?.codex || {}
+    const codexCfg = appSettings?.agents?.codex || {};
     payload.codexOptions = {
-      displayMode: (codexCfg as any).displayMode || 'clean',
-      showReasoning: (codexCfg as any).showReasoning !== false
+      displayMode: (codexCfg as any).displayMode || "clean",
+      showReasoning: (codexCfg as any).showReasoning !== false,
+    };
+    if (codexThreadId) {
+      payload.threadId = codexThreadId;
+    }
+    if (projectDir) {
+      payload.workingDirectory = projectDir;
     }
 
     try {
       if ((window as any).__TAURI__) {
-        console.log('[Composer] invoking start_codex before send')
-        await tauriInvoke('start_codex', { sessionId: sessionId, projectDir: projectDir || '' }).catch((err: unknown) => {
-          console.error('Failed to start Codex:', err)
-        })
+        console.log("[Composer] invoking start_codex before send");
+        await tauriInvoke("start_codex", {
+          sessionId: sessionId,
+          projectDir: projectDir || "",
+          threadId: codexThreadId ?? null,
+          model: currentModel.slug,
+          sandboxMode: currentMode.sandboxMode,
+        }).catch((err: unknown) => {
+          console.error("Failed to start Codex:", err);
+        });
       }
-      await tauriInvoke('send_to_codex', { sessionId: sessionId, input: JSON.stringify(payload) })
+      await tauriInvoke("send_to_codex", {
+        sessionId: sessionId,
+        input: JSON.stringify(payload),
+      });
     } catch (err) {
-      console.error('Failed to invoke Codex:', err)
-      setStreaming(false)
-      streamEnabledRef.current = false
+      console.error("Failed to invoke Codex:", err);
+      setStreaming(false);
+      streamEnabledRef.current = false;
     }
-  }
+  };
 
   const handleStop = async () => {
     try {
-      await tauriInvoke('interrupt_codex', { sessionId: sessionId })
+      await tauriInvoke("interrupt_codex", { sessionId: sessionId });
     } catch (err) {
-      console.error('Failed to interrupt Codex:', err)
+      console.error("Failed to interrupt Codex:", err);
     } finally {
-      setStreaming(false)
-      streamEnabledRef.current = false
-      useSession.getState().setStreaming(false)
+      setStreaming(false);
+      streamEnabledRef.current = false;
+      useSession.getState().setStreaming(false);
     }
-  }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (contextMenuOpen && activeMention) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        if (!contextMatches.length) return
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (!contextMatches.length) return;
         setContextHighlight((prev) => {
-          const next = prev + 1
-          return next >= contextMatches.length ? contextMatches.length - 1 : next
-        })
-        return
+          const next = prev + 1;
+          return next >= contextMatches.length
+            ? contextMatches.length - 1
+            : next;
+        });
+        return;
       }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        if (!contextMatches.length) return
-        setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1))
-        return
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!contextMatches.length) return;
+        setContextHighlight((prev) => (prev <= 0 ? 0 : prev - 1));
+        return;
       }
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        const targetPath = contextMatches[contextHighlight] ?? contextMatches[0]
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const targetPath =
+          contextMatches[contextHighlight] ?? contextMatches[0];
         if (targetPath) {
-          handleSelectContext(targetPath)
+          handleSelectContext(targetPath);
         }
-        return
+        return;
       }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setActiveMention(null)
-        setContextMenuOpen(false)
-        return
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setActiveMention(null);
+        setContextMenuOpen(false);
+        return;
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
-  }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    handleSend()
-  }
+    e.preventDefault();
+    handleSend();
+  };
 
-  const currentModel = CODEX_MODELS.find((m) => m.id === selectedModel) ?? CODEX_MODELS[0]
-  const currentMode = MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0]
+  const currentModel =
+    CODEX_ONLY.find((m) => m.id === selectedModel) ?? CODEX_ONLY[0];
+  const currentMode =
+    MODE_OPTIONS.find((opt) => opt.id === selectedMode) ?? MODE_OPTIONS[0];
 
   return (
     <div className="input-container">
       <form id="chat-form" className="chat-form" onSubmit={handleSubmit}>
         <div
           ref={wrapperRef}
-          className={`input-wrapper ${isFocused ? 'is-focused' : ''} ${isDragging ? 'dragging' : ''}`}
+          className={`input-wrapper ${isFocused ? "is-focused" : ""} ${isDragging ? "dragging" : ""}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -817,14 +1099,19 @@ useEffect(() => {
                   <span>@</span> Add Context
                 </button>
                 {contextMenuOpen && (
-                  <div className="context-picker" ref={contextMenuRef} role="dialog" aria-label="Add context files">
+                  <div
+                    className="context-picker"
+                    ref={contextMenuRef}
+                    role="dialog"
+                    aria-label="Add context files"
+                  >
                     <div className="context-picker-search">
                       <input
                         ref={contextSearchRef}
                         value={contextQuery}
                         onChange={(event) => {
-                          setContextQuery(event.target.value)
-                          setContextHighlight(0)
+                          setContextQuery(event.target.value);
+                          setContextHighlight(0);
                         }}
                         onFocus={() => setContextMenuManual(true)}
                         onKeyDown={handleContextKeyDown}
@@ -834,47 +1121,65 @@ useEffect(() => {
                     </div>
                     <div className="context-picker-results">
                       {!hasProject && (
-                        <div className="context-picker-empty">Open a project to attach context files.</div>
+                        <div className="context-picker-empty">
+                          Open a project to attach context files.
+                        </div>
                       )}
                       {hasProject && filesLoading && (
-                        <div className="context-picker-empty">Loading files…</div>
+                        <div className="context-picker-empty">
+                          Loading files…
+                        </div>
                       )}
                       {hasProject && !filesLoading && filesError && (
                         <div className="context-picker-empty">{filesError}</div>
                       )}
-                      {hasProject && !filesLoading && !filesError && contextMatches.length === 0 && (
-                        <div className="context-picker-empty">No matching files.</div>
-                      )}
-                      {hasProject && !filesLoading && !filesError && contextMatches.length > 0 && (
-                        <div className="context-picker-list">
-                          {contextMatches.map((path, index) => (
-                            <button
-                              key={path}
-                              type="button"
-                              className={`context-picker-item ${index === contextHighlight ? 'is-active' : ''}`}
-                              onMouseEnter={() => setContextHighlight(index)}
-                              onMouseDown={(event) => {
-                                event.preventDefault()
-                                handleSelectContext(path)
-                              }}
-                            >
-                              <span className="context-picker-path">{path}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                      {hasProject &&
+                        !filesLoading &&
+                        !filesError &&
+                        contextMatches.length === 0 && (
+                          <div className="context-picker-empty">
+                            No matching files.
+                          </div>
+                        )}
+                      {hasProject &&
+                        !filesLoading &&
+                        !filesError &&
+                        contextMatches.length > 0 && (
+                          <div className="context-picker-list">
+                            {contextMatches.map((path, index) => (
+                              <button
+                                key={path}
+                                type="button"
+                                className={`context-picker-item ${index === contextHighlight ? "is-active" : ""}`}
+                                onMouseEnter={() => setContextHighlight(index)}
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  handleSelectContext(path);
+                                }}
+                              >
+                                <span className="context-picker-path">
+                                  {path}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                     </div>
                   </div>
                 )}
               </div>
-              {contextTokens.length > 0 && (
-                <div className="context-pills" aria-label="Context files">
+              {(contextTokens.length > 0 || hasBrowserSelection) && (
+                <div className="context-pills" aria-label="Context items">
                   {contextTokens.map((token) => {
-                    const label = token.startsWith('@"') ? token.slice(2, -1) : token.slice(1)
+                    const label = token.startsWith('@"')
+                      ? token.slice(2, -1)
+                      : token.slice(1);
                     return (
                       <div key={`${token}`} className="context-pill">
                         <span className="context-pill-icon">@</span>
-                        <span className="context-pill-label" title={label}>{label}</span>
+                        <span className="context-pill-label" title={label}>
+                          {label}
+                        </span>
                         <button
                           type="button"
                           className="context-pill-remove"
@@ -884,8 +1189,32 @@ useEffect(() => {
                           ×
                         </button>
                       </div>
-                    )
+                    );
                   })}
+                  {browserSelection && (
+                    <div
+                      className="context-pill"
+                      style={{ opacity: includeBrowserSelection ? 1 : 0.65 }}
+                    >
+                      <span className="context-pill-icon">DOM</span>
+                      <span
+                        className="context-pill-label"
+                        title={browserSelectionTitle}
+                      >
+                        {includeBrowserSelection
+                          ? browserSelectionLabel
+                          : `${browserSelectionLabel} (used)`}
+                      </span>
+                      <button
+                        type="button"
+                        className="context-pill-remove"
+                        onClick={() => clearBrowserSelection()}
+                        aria-label="Remove embedded selection"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               {attachedImages.length > 0 && (
@@ -897,11 +1226,17 @@ useEffect(() => {
                         style={{ backgroundImage: `url(${img.url})` }}
                         aria-hidden="true"
                       />
-                      <span className="attachment-name" title={img.name}>{img.name}</span>
+                      <span className="attachment-name" title={img.name}>
+                        {img.name}
+                      </span>
                       <button
                         type="button"
                         className="attachment-remove"
-                        onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
+                        onClick={() =>
+                          setAttachedImages((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
                         aria-label={`Remove ${img.name}`}
                       >
                         ×
@@ -915,17 +1250,20 @@ useEffect(() => {
 
           {showAgents && (
             <div className="agent-menu">
-              {agents.map(agent => (
+              {agents.map((agent) => (
                 <button
                   key={agent.id}
                   className="agent-option"
                   onClick={() => {
-                    setShowAgents(false)
-                    setTimeout(() => textareaRef.current?.focus(), 0)
+                    setShowAgents(false);
+                    setTimeout(() => textareaRef.current?.focus(), 0);
                   }}
                   onMouseDown={(e) => e.preventDefault()}
                 >
-                  <span className="agent-dot" style={{ background: agent.color }} />
+                  <span
+                    className="agent-dot"
+                    style={{ background: agent.color }}
+                  />
                   <div className="agent-info">
                     <div className="agent-name">@{agent.id}</div>
                     <div className="agent-desc">{agent.description}</div>
@@ -963,23 +1301,27 @@ useEffect(() => {
                   <ChevronDown size={14} />
                 </button>
                 {showModelMenu && (
-                  <div className="model-popover" ref={modelMenuRef} role="listbox">
-                    {CODEX_MODELS.map((model) => {
-                      const isActive = model.id === selectedModel
+                  <div
+                    className="model-popover"
+                    ref={modelMenuRef}
+                    role="listbox"
+                  >
+                    {CODEX_ONLY.map((model) => {
+                      const isActive = model.id === selectedModel;
                       return (
                         <button
                           key={model.id}
-                          className={`model-option ${isActive ? 'active' : ''}`}
+                          className={`model-option ${isActive ? "active" : ""}`}
                           role="option"
                           aria-selected={isActive}
                           onClick={() => {
-                            setSelectedModel(model.id)
-                            setShowModelMenu(false)
+                            setSelectedModel(model.id);
+                            setShowModelMenu(false);
                           }}
                         >
                           {model.label}
                         </button>
-                      )
+                      );
                     })}
                   </div>
                 )}
@@ -997,64 +1339,71 @@ useEffect(() => {
                   <ChevronDown size={14} />
                 </button>
                 {showModeMenu && (
-                  <div className="mode-popover" ref={modeMenuRef} role="listbox">
+                  <div
+                    className="mode-popover"
+                    ref={modeMenuRef}
+                    role="listbox"
+                  >
                     {MODE_OPTIONS.map((option) => {
-                      const isActive = option.id === selectedMode
+                      const isActive = option.id === selectedMode;
                       return (
                         <button
                           key={option.id}
-                          className={`mode-option ${isActive ? 'active' : ''}`}
+                          className={`mode-option ${isActive ? "active" : ""}`}
                           role="option"
                           aria-selected={isActive}
                           onClick={() => {
-                            setSelectedMode(option.id)
-                            setShowModeMenu(false)
+                            setSelectedMode(option.id);
+                            setShowModeMenu(false);
                           }}
                         >
                           <span>{option.label}</span>
                           {isActive && <span className="mode-check">✓</span>}
                         </button>
-                      )
+                      );
                     })}
                   </div>
                 )}
               </div>
-              {contextInfo?.percentLeft !== undefined && contextInfo.dashOffset !== undefined && (
-                <div
-                  className="context-meter"
-                  title={(() => {
-                    const percent = `${Math.round(contextInfo.percentLeft)}% left`
-                    const hasTokens = contextInfo.remainingTokens !== undefined && contextInfo.effectiveTokens !== undefined
-                    const remaining = hasTokens
-                      ? `${formatTokens(contextInfo.remainingTokens)} / ${formatTokens(contextInfo.effectiveTokens)} tokens`
-                      : undefined
-                    return remaining ? `${percent} · ${remaining}` : percent
-                  })()}
-                >
-                  <svg
-                    className="context-ring"
-                    width={contextInfo.radius * 2 + 2}
-                    height={contextInfo.radius * 2 + 2}
-                    viewBox={`0 0 ${contextInfo.radius * 2 + 2} ${contextInfo.radius * 2 + 2}`}
+              {contextInfo?.percentLeft !== undefined &&
+                contextInfo.dashOffset !== undefined && (
+                  <div
+                    className="context-meter"
+                    title={(() => {
+                      const percent = `${Math.round(contextInfo.percentLeft)}% left`;
+                      const hasTokens =
+                        contextInfo.remainingTokens !== undefined &&
+                        contextInfo.effectiveTokens !== undefined;
+                      const remaining = hasTokens
+                        ? `${formatTokens(contextInfo.remainingTokens)} / ${formatTokens(contextInfo.effectiveTokens)} tokens`
+                        : undefined;
+                      return remaining ? `${percent} · ${remaining}` : percent;
+                    })()}
                   >
-                    <circle
-                      className="context-ring-bg"
-                      cx={contextInfo.radius + 1}
-                      cy={contextInfo.radius + 1}
-                      r={contextInfo.radius}
-                    />
-                    <circle
-                      className="context-ring-progress"
-                      cx={contextInfo.radius + 1}
-                      cy={contextInfo.radius + 1}
-                      r={contextInfo.radius}
-                      strokeDasharray={contextInfo.circumference}
-                      strokeDashoffset={contextInfo.dashOffset}
-                    />
-                  </svg>
-                  <span>{Math.round(contextInfo.percentLeft)}%</span>
-                </div>
-              )}
+                    <svg
+                      className="context-ring"
+                      width={contextInfo.radius * 2 + 2}
+                      height={contextInfo.radius * 2 + 2}
+                      viewBox={`0 0 ${contextInfo.radius * 2 + 2} ${contextInfo.radius * 2 + 2}`}
+                    >
+                      <circle
+                        className="context-ring-bg"
+                        cx={contextInfo.radius + 1}
+                        cy={contextInfo.radius + 1}
+                        r={contextInfo.radius}
+                      />
+                      <circle
+                        className="context-ring-progress"
+                        cx={contextInfo.radius + 1}
+                        cy={contextInfo.radius + 1}
+                        r={contextInfo.radius}
+                        strokeDasharray={contextInfo.circumference}
+                        strokeDashoffset={contextInfo.dashOffset}
+                      />
+                    </svg>
+                    <span>{Math.round(contextInfo.percentLeft)}%</span>
+                  </div>
+                )}
             </div>
 
             <div className="footer-right">
@@ -1074,18 +1423,21 @@ useEffect(() => {
                 type="file"
                 accept="image/*"
                 multiple
-                style={{ display: 'none' }}
+                style={{ display: "none" }}
                 onChange={(e) => {
-                  const files = Array.from(e.target.files || [])
-                  files.forEach(file => {
-                    const reader = new FileReader()
+                  const files = Array.from(e.target.files || []);
+                  files.forEach((file) => {
+                    const reader = new FileReader();
                     reader.onload = (ev) => {
-                      const dataUrl = ev.target?.result as string
-                      setAttachedImages(prev => [...prev, { url: dataUrl, name: file.name }])
-                    }
-                    reader.readAsDataURL(file)
-                  })
-                  e.target.value = ''
+                      const dataUrl = ev.target?.result as string;
+                      setAttachedImages((prev) => [
+                        ...prev,
+                        { url: dataUrl, name: file.name },
+                      ]);
+                    };
+                    reader.readAsDataURL(file);
+                  });
+                  e.target.value = "";
                 }}
               />
               <button type="button" className="icon-btn" title="Voice input">
@@ -1093,7 +1445,7 @@ useEffect(() => {
               </button>
               <button
                 type="button"
-                className={`icon-btn ${showTerminal ? 'active' : ''}`}
+                className={`icon-btn ${showTerminal ? "active" : ""}`}
                 title="Toggle terminal"
                 onClick={() => setShowTerminal(!showTerminal)}
                 aria-pressed={showTerminal}
@@ -1102,7 +1454,7 @@ useEffect(() => {
               </button>
               <button
                 type="button"
-                className={`stop-btn ${isStreaming ? '' : 'hidden'}`}
+                className={`stop-btn ${isStreaming ? "" : "hidden"}`}
                 onClick={handleStop}
                 disabled={!isStreaming}
               >
@@ -1120,7 +1472,6 @@ useEffect(() => {
           </div>
         </div>
       </form>
-
     </div>
-  )
+  );
 }

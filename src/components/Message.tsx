@@ -1,9 +1,11 @@
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, FileDiff, RefreshCcw } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { StructuredMessage } from './StructuredMessage'
 import type { MessageEvent } from '../state/session'
+import { useSession } from '../state/session'
+import { useEditor } from '../state/editor'
  
 interface MessageProps {
   message: MessageEvent
@@ -115,6 +117,7 @@ export function Message({ message, isStreaming = false, checkpointId, turnIndex,
     return (
       <div className={`message ${message.role} no-avatar ${isStreaming && isAssistant ? 'streaming' : ''}`}>
         <div className="assistant-body">
+          <AssistantActions />
           {isStructuredOutput ? (
             <StructuredMessage
               content={cleanAnsiText(message.text)}
@@ -222,6 +225,53 @@ export function Message({ message, isStreaming = false, checkpointId, turnIndex,
           }
         })}
       </div>
+    </div>
+  )
+}
+
+function AssistantActions() {
+  const hasEdits = useSession((s) => s.edits.length > 0)
+  const setActiveFile = useEditor((s) => s.setActiveFile)
+  return (
+    <div className="assistant-actions">
+      {hasEdits && (
+        <button
+          className="assistant-action-btn"
+          type="button"
+          title="View diffs"
+          onClick={() => {
+            import('../state/session').then(({ useSession }) => {
+              const state = useSession.getState()
+              state.setWorkbenchTab('diffs')
+              if (state.edits.length) {
+                state.selectEdit(state.edits[state.edits.length - 1].id)
+              }
+            })
+          }}
+        >
+          <FileDiff size={14} />
+          <span>View diff</span>
+        </button>
+      )}
+      <button
+        className="assistant-action-btn"
+        type="button"
+        title="Re-run with same prompt"
+        onClick={() => {
+          setActiveFile(undefined)
+          import('../state/session').then(({ useSession }) => {
+            const state = useSession.getState()
+            const lastUser = [...state.messages].reverse().find((m) => m.role === 'user')
+            if (lastUser) {
+              const event = new CustomEvent('composer:rerun', { detail: { text: lastUser.text } })
+              window.dispatchEvent(event)
+            }
+          })
+        }}
+      >
+        <RefreshCcw size={14} />
+        <span>Retry</span>
+      </button>
     </div>
   )
 }

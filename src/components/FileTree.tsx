@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { readDir, exists, BaseDirectory } from '@tauri-apps/plugin-fs'
-import { ChevronRight, ChevronDown, Folder, FolderOpen, GitBranch, Search } from 'lucide-react'
+import { ChevronRight, ChevronDown, Folder, FolderOpen, Search, GitBranch } from 'lucide-react'
 import { useSession } from '../state/session'
+import { useEditor } from '../state/editor'
 import { useWorkspaceStore } from '../state/workspace'
 import { getFileIcon } from '../utils/fileIcons'
 import { path } from '@tauri-apps/api'
@@ -18,9 +19,21 @@ interface FileNode {
   expanded?: boolean
 }
 
-export function FileTree() {
+const normalizePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '')
+
+type FileTreeProps = {
+  searchVisible: boolean
+  showGitStatus: boolean
+  onToggleSearch?: () => void
+  onToggleGitStatus?: () => void
+}
+
+export function FileTree({ searchVisible, showGitStatus, onToggleSearch, onToggleGitStatus }: FileTreeProps) {
   const projectDir = useSession((s) => s.projectDir)
-  const { activeProjectId, getProject } = useWorkspaceStore()
+  const activeProjectId = useWorkspaceStore((state) => state.activeProjectId)
+  const getProject = useWorkspaceStore((state) => state.getProject)
+  const openFileInEditor = useEditor((s) => s.openFile)
+  const setActiveEditorFile = useEditor((s) => s.setActiveFile)
   const [nodes, setNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [diagnostics, setDiagnostics] = useState<string[]>([])
@@ -28,25 +41,20 @@ export function FileTree() {
   const lastLoadPath = useRef<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const [gitStatus, setGitStatus] = useState<Map<string, GitFileStatus>>(new Map())
-  const [showGitStatus, setShowGitStatus] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchVisible, setSearchVisible] = useState(false)
   
   // Get the active project path from workspace store
   const activeProject = activeProjectId ? getProject(activeProjectId) : null
   const currentProjectPath = projectDir || activeProject?.path
-
   const projectLabel = useMemo(() => {
-    if (activeProject?.name && activeProject.name.trim().length) {
-      return activeProject.name
+    if (activeProject?.name && activeProject.name.trim().length) return activeProject.name
+    if (projectDir) {
+      const parts = projectDir.split(/\\|\//).filter(Boolean)
+      return parts[parts.length - 1] ?? projectDir
     }
-    if (currentProjectPath) {
-      const parts = currentProjectPath.split(/\\|\//).filter(Boolean)
-      return parts[parts.length - 1] ?? currentProjectPath
-    }
-    return ''
-  }, [activeProject?.name, currentProjectPath])
-  
+    return 'Workspace'
+  }, [activeProject?.name, projectDir])
+
   // Add diagnostic helper
   const addDiagnostic = (msg: string) => {
     const timestamp = new Date().toISOString()
@@ -275,6 +283,12 @@ export function FileTree() {
     }
   }, [searchVisible])
 
+  useEffect(() => {
+    if (!searchVisible && searchQuery) {
+      setSearchQuery('')
+    }
+  }, [searchVisible, searchQuery])
+
   // Refresh git status periodically
   useEffect(() => {
     if (!currentProjectPath || !showGitStatus) return
@@ -313,10 +327,14 @@ export function FileTree() {
   }
 
   // Open file
-  function openFile(node: FileNode) {
-    if (node.kind === 'file') {
-      // TODO: Implement file opening
-      console.log('Open file:', node.path)
+  async function openFile(node: FileNode) {
+    if (node.kind !== 'file' || !currentProjectPath) return
+    const absolutePath = normalizePath(`${currentProjectPath.replace(/\\/g, '/')}/${node.path}`)
+    try {
+      await openFileInEditor(absolutePath)
+      setActiveEditorFile(absolutePath)
+    } catch (err) {
+      console.error('[FileTree] Failed to open file in editor', absolutePath, err)
     }
   }
 
@@ -388,33 +406,26 @@ export function FileTree() {
 
   return (
     <div className="file-tree">
-      <div className="file-tree-header file-tree-header--compact">
-        {projectLabel && (
-          <div className="file-tree-title" title={currentProjectPath ?? undefined}>
-            <span>{projectLabel}</span>
-          </div>
-        )}
+      <div className="file-tree-header">
+        <div className="file-tree-title">
+          <span>{projectLabel}</span>
+        </div>
         <div className="file-tree-actions">
           <button
+            type="button"
             className={`file-tree-action ${searchVisible ? 'active' : ''}`}
-            onClick={() => {
-              setSearchVisible((prev) => {
-                const next = !prev
-                if (!next) setSearchQuery('')
-                return next
-              })
-            }}
             title={searchVisible ? 'Hide search' : 'Search files'}
+            onClick={() => onToggleSearch && onToggleSearch()}
           >
-            <Search size={16} />
+            <Search size={14} />
           </button>
           <button
-            className="file-tree-action"
-            onClick={() => setShowGitStatus(!showGitStatus)}
+            type="button"
+            className={`file-tree-action ${showGitStatus ? 'active' : ''}`}
             title={showGitStatus ? 'Hide git status' : 'Show git status'}
-            style={{ opacity: showGitStatus ? 1 : 0.5 }}
+            onClick={() => onToggleGitStatus && onToggleGitStatus()}
           >
-            <GitBranch size={16} />
+            <GitBranch size={14} />
           </button>
         </div>
       </div>

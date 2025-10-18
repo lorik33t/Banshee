@@ -13,7 +13,8 @@ const toolIcons = {
   write: FileEdit,
   web: Globe,
   mcp: Terminal,
-  task: Cpu
+  task: Cpu,
+  'file-change': FileEdit
 } as const
 
 const subagentIcons = {
@@ -61,7 +62,8 @@ export function ToolExecution({ tool }: ToolExecutionProps) {
       websearch: 'Search',
       todowrite: 'Todo',
       exitplanmode: 'Plan',
-      notebookedit: 'Notebook'
+      notebookedit: 'Notebook',
+      'file-change': 'File changes'
     }
     return simple[name] || tool.tool
   }, [tool.tool])
@@ -87,6 +89,13 @@ export function ToolExecution({ tool }: ToolExecutionProps) {
     if (name === 'websearch' || name === 'webfetch') {
       const query = (tool.args.query || tool.args.url || '').toString()
       return query
+    }
+    if (name === 'file-change') {
+      const changes = Array.isArray(tool.args?.changes) ? tool.args.changes : []
+      if (changes.length === 0) return tool.args?.status || 'Updated'
+      const first = changes[0]
+      const symbol = typeof first?.kind === 'string' ? first.kind.toUpperCase() : 'CHANGE'
+      return `${symbol}: ${first?.path || first?.file || ''}`
     }
     return undefined
   }, [tool])

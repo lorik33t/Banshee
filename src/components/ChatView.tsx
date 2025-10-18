@@ -21,9 +21,6 @@ export function ChatView() {
   const isStreaming = useSession((s) => s.isStreaming)
   const setStreaming = useSession((s) => s.setStreaming)
   const streamingStartTime = useSession((s) => s.streamingStartTime)
-  const sessionId = useSession((s) => s.sessionId)
-  const turns = useSession((s) => s.turns)
-  const restoreTurn = useSession((s) => s.restoreTurn)
   const scrollRef = useRef<HTMLDivElement>(null)
   
   useEffect(() => {
@@ -43,7 +40,7 @@ export function ChatView() {
           setShowTerminal(false)
         } else if (isStreaming) {
           import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke('interrupt_codex', { sessionId: sessionId }).catch(() => {})
+            invoke('interrupt_codex').catch(() => {})
           })
         }
       }
@@ -55,7 +52,7 @@ export function ChatView() {
     
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [showTerminal, setShowTerminal, isStreaming, sessionId])
+  }, [showTerminal, setShowTerminal, isStreaming])
 
   const items = useMemo(() => {
     const items: ConversationItem[] = []
@@ -138,16 +135,6 @@ export function ChatView() {
     return items
   }, [events, messages, tools])
 
-  const turnLookup = useMemo(() => {
-    const map = new Map<string, { index: number; checkpointId?: string }>()
-    turns.forEach((snapshot, index) => {
-      if (snapshot.id) {
-        map.set(snapshot.id, { index, checkpointId: snapshot.checkpointId })
-      }
-    })
-    return map
-  }, [turns])
-
   if (items.length === 0 && !showTerminal) {
     return (
       <div className="chat-view" ref={scrollRef}>
@@ -170,17 +157,7 @@ export function ChatView() {
         <div className="chat-content">
           {items.map((item, i) => {
             if (item.type === 'message') {
-              const turnInfo = turnLookup.get(item.event.id)
-              return (
-                <Message
-                  key={item.event.id}
-                  message={item.event}
-                  isStreaming={isStreaming}
-                  checkpointId={turnInfo?.checkpointId}
-                  turnIndex={turnInfo?.index}
-                  onRestoreTurn={restoreTurn}
-                />
-              )
+              return <Message key={item.event.id} message={item.event} isStreaming={isStreaming} />
             } else if (item.type === 'thinking') {
               const toolRuns = item.toolIds
                 .map((id) => tools[id])
@@ -195,18 +172,16 @@ export function ChatView() {
             }
             return null
           })}
-          {isStreaming && (
-            <div className="message assistant no-avatar">
-              <div className="assistant-body">
-                <StreamingLoader
-                  active
-                  startTime={streamingStartTime}
-                  label={'Thinking…'}
-                  showTimer={true}
-                />
-              </div>
+          <div className="message assistant no-avatar">
+            <div className="assistant-body">
+              <StreamingLoader 
+                active={isStreaming}
+                startTime={streamingStartTime}
+                label={'Thinking…'}
+                showTimer={true}
+              />
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>
